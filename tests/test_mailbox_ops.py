@@ -95,3 +95,51 @@ class TestMailboxDelimiterTranslation:
     def test_from_imap_path_rewrites_server_delimiter_to_slash(self, email_server):
         ops = MailboxOps(email_server)
         assert ops.from_imap_path("INBOX.Archive.2026", ".") == "INBOX/Archive/2026"
+
+
+class TestMailboxListing:
+    @pytest.mark.asyncio
+    async def test_list_mailboxes_uses_list_and_parses_paths(self, email_server):
+        ops = MailboxOps(email_server)
+        ops._delimiter = "."
+        mock_imap = AsyncMock()
+        mock_imap.list = AsyncMock(
+            return_value=(
+                "OK",
+                [
+                    b'(\\HasNoChildren) "." "INBOX.Archive"',
+                    b'(\\HasChildren \\Subscribed) "." "INBOX.Projects"',
+                ],
+            )
+        )
+
+        with patch.object(ops, "_login_logout") as mock_login_logout:
+            mock_login_logout.return_value.__aenter__.return_value = mock_imap
+            mock_login_logout.return_value.__aexit__.return_value = None
+            mailboxes = await ops.list_mailboxes(pattern="INBOX/*")
+
+        assert [mailbox.path for mailbox in mailboxes] == ["INBOX/Archive", "INBOX/Projects"]
+        assert mailboxes[0].delimiter == "."
+        assert mailboxes[0].flags == [r"\HasNoChildren"]
+        assert mailboxes[0].subscribed is False
+        assert mailboxes[1].subscribed is True
+        mock_imap.list.assert_awaited_once_with('""', "INBOX.%")
+
+    @pytest.mark.asyncio
+    async def test_list_mailboxes_uses_lsub_for_subscribed_only(self, email_server):
+        ops = MailboxOps(email_server)
+        ops._delimiter = "."
+        mock_imap = AsyncMock()
+        mock_imap.lsub = AsyncMock(
+            return_value=("OK", [b'(\\Subscribed \\HasNoChildren) "." "INBOX.Newsletters"'])
+        )
+
+        with patch.object(ops, "_login_logout") as mock_login_logout:
+            mock_login_logout.return_value.__aenter__.return_value = mock_imap
+            mock_login_logout.return_value.__aexit__.return_value = None
+            mailboxes = await ops.list_mailboxes(pattern="INBOX/*", subscribed_only=True)
+
+        assert len(mailboxes) == 1
+        assert mailboxes[0].path == "INBOX/Newsletters"
+        assert mailboxes[0].subscribed is True
+        mock_imap.lsub.assert_awaited_once_with('""', "INBOX.%")

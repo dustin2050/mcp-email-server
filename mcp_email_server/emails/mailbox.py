@@ -7,6 +7,7 @@ import aioimaplib
 
 from mcp_email_server.config import EmailServer
 from mcp_email_server.emails._helpers import _create_ssl_context, _send_imap_id
+from mcp_email_server.emails.models import MailboxInfo
 from mcp_email_server.log import logger
 
 LIST_LINE_RE = re.compile(rb'^\((?P<flags>[^)]*)\)\s+(?P<delimiter>NIL|"[^"]*")\s+(?P<name>.+)$')
@@ -81,3 +82,43 @@ class MailboxOps:
         if delimiter == "":
             return server_path
         return server_path.replace(delimiter, "/")
+
+    async def list_mailboxes(self, pattern: str = "*", subscribed_only: bool = False) -> list[MailboxInfo]:
+        async with self._login_logout() as imap:
+            delimiter = await self.ensure_delimiter(imap)
+            imap_pattern = pattern.replace("*", "%")
+            if delimiter != "":
+                imap_pattern = imap_pattern.replace("/", delimiter)
+            if subscribed_only:
+                _, lines = await imap.lsub('""', imap_pattern)
+            else:
+                _, lines = await imap.list('""', imap_pattern)
+
+            mailboxes: list[MailboxInfo] = []
+            for line in lines:
+                if not isinstance(line, bytes):
+                    continue
+                match = LIST_LINE_RE.match(line)
+                if not match:
+                    continue
+
+                flags_bytes = match.group("flags")
+                flags = [flag.decode("utf-8") for flag in flags_bytes.split()] if flags_bytes else []
+                delimiter_token = match.group("delimiter")
+                line_delimiter = "" if delimiter_token == b"NIL" else delimiter_token[1:-1].decode("utf-8")
+                name_token = match.group("name").strip()
+                if name_token.startswith(b'"') and name_token.endswith(b'"'):
+                    server_name = name_token[1:-1].decode("utf-8")
+                else:
+                    server_name = name_token.decode("utf-8")
+
+                mailboxes.append(
+                    MailboxInfo(
+                        path=self.from_imap_path(server_name, line_delimiter or delimiter),
+                        delimiter=line_delimiter,
+                        flags=flags,
+                        subscribed=subscribed_only or r"\Subscribed" in flags,
+                    )
+                )
+
+            return mailboxes
