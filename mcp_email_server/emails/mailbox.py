@@ -7,7 +7,7 @@ import aioimaplib
 
 from mcp_email_server.config import EmailServer
 from mcp_email_server.emails._helpers import _create_ssl_context, _quote_mailbox, _send_imap_id
-from mcp_email_server.emails.models import MailboxInfo, MailboxStatusResponse
+from mcp_email_server.emails.models import MailboxInfo, MailboxStatusResponse, MovedEmail
 from mcp_email_server.log import logger
 
 LIST_LINE_RE = re.compile(rb'^\((?P<flags>[^)]*)\)\s+(?P<delimiter>NIL|"[^"]*")\s+(?P<name>.+)$')
@@ -232,3 +232,22 @@ class EmailOps:
                 await imap.logout()
             except Exception as e:
                 logger.info(f"Error during logout: {e}")
+
+    async def move_emails(
+        self,
+        email_ids: list[str],
+        source_mailbox: str,
+        destination_mailbox: str,
+    ) -> list[MovedEmail]:
+        async with self._login_logout() as imap:
+            await self.mailbox_ops.ensure_delimiter(imap)
+            await imap.select(_quote_mailbox(self.mailbox_ops.to_imap_path(source_mailbox)))
+            uid_set = ",".join(email_ids)
+            destination = _quote_mailbox(self.mailbox_ops.to_imap_path(destination_mailbox))
+            result, lines = await imap.uid("move", uid_set, destination)
+            if result != "OK":
+                raise RuntimeError(f"UID MOVE failed with IMAP result {result}: {lines!r}")
+            return [
+                MovedEmail(message_id=email_id, success=True, error=None, method="native")
+                for email_id in email_ids
+            ]
