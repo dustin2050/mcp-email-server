@@ -1,6 +1,7 @@
 import asyncio
 from unittest.mock import AsyncMock, patch
 
+from aioimaplib.aioimaplib import Response
 import pytest
 
 from mcp_email_server.config import EmailServer
@@ -151,7 +152,7 @@ class TestMailboxMutation:
         ops = MailboxOps(email_server)
         ops._delimiter = "."
         mock_imap = AsyncMock()
-        mock_imap.create = AsyncMock(return_value=("OK", [b"create completed"]))
+        mock_imap.create = AsyncMock(return_value=Response("OK", [b"create completed"]))
 
         with patch.object(ops, "_login_logout") as mock_login_logout:
             mock_login_logout.return_value.__aenter__.return_value = mock_imap
@@ -162,11 +163,24 @@ class TestMailboxMutation:
         mock_imap.create.assert_awaited_once_with('"INBOX.Projects.2026"')
 
     @pytest.mark.asyncio
+    async def test_create_mailbox_raises_on_no_response(self, email_server):
+        ops = MailboxOps(email_server)
+        ops._delimiter = "."
+        mock_imap = AsyncMock()
+        mock_imap.create = AsyncMock(return_value=Response("NO", [b"[ALREADYEXISTS] mailbox exists"]))
+
+        with patch.object(ops, "_login_logout") as mock_login_logout:
+            mock_login_logout.return_value.__aenter__.return_value = mock_imap
+            mock_login_logout.return_value.__aexit__.return_value = None
+            with pytest.raises(RuntimeError, match=r"ALREADYEXISTS.*mailbox exists"):
+                await ops.create_mailbox("INBOX/Projects/2026")
+
+    @pytest.mark.asyncio
     async def test_rename_mailbox_translates_both_paths(self, email_server):
         ops = MailboxOps(email_server)
         ops._delimiter = "."
         mock_imap = AsyncMock()
-        mock_imap.rename = AsyncMock(return_value=("OK", [b"rename completed"]))
+        mock_imap.rename = AsyncMock(return_value=Response("OK", [b"rename completed"]))
 
         with patch.object(ops, "_login_logout") as mock_login_logout:
             mock_login_logout.return_value.__aenter__.return_value = mock_imap
@@ -175,6 +189,19 @@ class TestMailboxMutation:
 
         assert result == "Successfully renamed mailbox 'INBOX/Projects/2025' to 'INBOX/Projects/2026'"
         mock_imap.rename.assert_awaited_once_with('"INBOX.Projects.2025"', '"INBOX.Projects.2026"')
+
+    @pytest.mark.asyncio
+    async def test_rename_mailbox_raises_on_no_response(self, email_server):
+        ops = MailboxOps(email_server)
+        ops._delimiter = "."
+        mock_imap = AsyncMock()
+        mock_imap.rename = AsyncMock(return_value=Response("NO", [b"[NONEXISTENT] old mailbox missing"]))
+
+        with patch.object(ops, "_login_logout") as mock_login_logout:
+            mock_login_logout.return_value.__aenter__.return_value = mock_imap
+            mock_login_logout.return_value.__aexit__.return_value = None
+            with pytest.raises(RuntimeError, match=r"NONEXISTENT.*old mailbox missing"):
+                await ops.rename_mailbox("INBOX/Projects/2025", "INBOX/Projects/2026")
 
     @pytest.mark.asyncio
     async def test_delete_mailbox_requires_confirm(self, email_server):
@@ -187,7 +214,7 @@ class TestMailboxMutation:
         ops = MailboxOps(email_server)
         ops._delimiter = "."
         mock_imap = AsyncMock()
-        mock_imap.delete = AsyncMock(return_value=("OK", [b"delete completed"]))
+        mock_imap.delete = AsyncMock(return_value=Response("OK", [b"delete completed"]))
 
         with patch.object(ops, "_login_logout") as mock_login_logout:
             mock_login_logout.return_value.__aenter__.return_value = mock_imap
@@ -197,6 +224,19 @@ class TestMailboxMutation:
         assert result == "Successfully deleted mailbox 'INBOX/Archive'"
         mock_imap.delete.assert_awaited_once_with('"INBOX.Archive"')
 
+    @pytest.mark.asyncio
+    async def test_delete_mailbox_raises_on_no_response(self, email_server):
+        ops = MailboxOps(email_server)
+        ops._delimiter = "."
+        mock_imap = AsyncMock()
+        mock_imap.delete = AsyncMock(return_value=Response("NO", [b"[INUSE] mailbox is selected"]))
+
+        with patch.object(ops, "_login_logout") as mock_login_logout:
+            mock_login_logout.return_value.__aenter__.return_value = mock_imap
+            mock_login_logout.return_value.__aexit__.return_value = None
+            with pytest.raises(RuntimeError, match=r"INUSE.*mailbox is selected"):
+                await ops.delete_mailbox("INBOX/Archive", confirm=True)
+
 
 class TestMailboxStatus:
     @pytest.mark.asyncio
@@ -205,7 +245,7 @@ class TestMailboxStatus:
         ops._delimiter = "."
         mock_imap = AsyncMock()
         mock_imap.examine = AsyncMock(
-            return_value=(
+            return_value=Response(
                 "OK",
                 [
                     b"* FLAGS (\\Seen \\Answered \\Flagged)",
@@ -214,7 +254,7 @@ class TestMailboxStatus:
             )
         )
         mock_imap.status = AsyncMock(
-            return_value=(
+            return_value=Response(
                 "OK",
                 [b'* STATUS "INBOX.Archive" (MESSAGES 12 RECENT 1 UIDNEXT 45 UIDVALIDITY 99 UNSEEN 3)'],
             )
@@ -235,3 +275,40 @@ class TestMailboxStatus:
         assert status.permanent_flags == [r"\Seen", r"\Answered", r"\Flagged", r"\*"]
         mock_imap.examine.assert_awaited_once_with('"INBOX.Archive"')
         mock_imap.status.assert_awaited_once_with('"INBOX.Archive"', "(MESSAGES RECENT UIDNEXT UIDVALIDITY UNSEEN)")
+
+    @pytest.mark.asyncio
+    async def test_get_mailbox_status_raises_on_examine_no_response(self, email_server):
+        ops = MailboxOps(email_server)
+        ops._delimiter = "."
+        mock_imap = AsyncMock()
+        mock_imap.examine = AsyncMock(return_value=Response("NO", [b"[TRYCREATE] mailbox missing"]))
+
+        with patch.object(ops, "_login_logout") as mock_login_logout:
+            mock_login_logout.return_value.__aenter__.return_value = mock_imap
+            mock_login_logout.return_value.__aexit__.return_value = None
+            with pytest.raises(RuntimeError, match=r"TRYCREATE.*mailbox missing"):
+                await ops.get_mailbox_status("INBOX/Archive")
+
+        mock_imap.status.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_get_mailbox_status_raises_on_status_no_response(self, email_server):
+        ops = MailboxOps(email_server)
+        ops._delimiter = "."
+        mock_imap = AsyncMock()
+        mock_imap.examine = AsyncMock(
+            return_value=Response(
+                "OK",
+                [
+                    b"* FLAGS (\\Seen)",
+                    b"* OK [PERMANENTFLAGS (\\Seen \\*)] Flags permitted.",
+                ],
+            )
+        )
+        mock_imap.status = AsyncMock(return_value=Response("NO", [b"[SERVERBUG] status disallowed"]))
+
+        with patch.object(ops, "_login_logout") as mock_login_logout:
+            mock_login_logout.return_value.__aenter__.return_value = mock_imap
+            mock_login_logout.return_value.__aexit__.return_value = None
+            with pytest.raises(RuntimeError, match=r"SERVERBUG.*status disallowed"):
+                await ops.get_mailbox_status("INBOX/Archive")

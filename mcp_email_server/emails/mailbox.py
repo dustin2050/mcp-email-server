@@ -16,6 +16,25 @@ FLAGS_LINE_RE = re.compile(rb'^\* FLAGS \((?P<flags>[^)]*)\)$')
 PERMANENT_FLAGS_LINE_RE = re.compile(rb'^\* OK \[PERMANENTFLAGS \((?P<flags>[^)]*)\)\]')
 
 
+def _decode_imap_line(line: bytes | str | object) -> str:
+    if isinstance(line, bytes):
+        return line.decode("utf-8", errors="replace")
+    return str(line)
+
+
+def _raise_for_imap_response(
+    response: aioimaplib.aioimaplib.Response | tuple[str, list[bytes]],
+    operation: str,
+    mailbox: str,
+) -> list[bytes]:
+    result = response.result if hasattr(response, "result") else response[0]
+    lines = response.lines if hasattr(response, "lines") else response[1]
+    if result != "OK":
+        detail = " ".join(_decode_imap_line(line) for line in lines)
+        raise RuntimeError(f"IMAP {operation} failed for {mailbox!r}: {detail}")
+    return lines
+
+
 class MailboxOps:
     def __init__(self, email_server: EmailServer):
         self.email_server = email_server
@@ -129,16 +148,18 @@ class MailboxOps:
     async def create_mailbox(self, mailbox: str) -> str:
         async with self._login_logout() as imap:
             await self.ensure_delimiter(imap)
-            await imap.create(_quote_mailbox(self.to_imap_path(mailbox)))
+            response = await imap.create(_quote_mailbox(self.to_imap_path(mailbox)))
+            _raise_for_imap_response(response, "CREATE", mailbox)
             return f"Successfully created mailbox '{mailbox}'"
 
     async def rename_mailbox(self, old_mailbox: str, new_mailbox: str) -> str:
         async with self._login_logout() as imap:
             await self.ensure_delimiter(imap)
-            await imap.rename(
+            response = await imap.rename(
                 _quote_mailbox(self.to_imap_path(old_mailbox)),
                 _quote_mailbox(self.to_imap_path(new_mailbox)),
             )
+            _raise_for_imap_response(response, "RENAME", old_mailbox)
             return f"Successfully renamed mailbox '{old_mailbox}' to '{new_mailbox}'"
 
     async def delete_mailbox(self, mailbox: str, confirm: bool = False) -> str:
@@ -146,7 +167,8 @@ class MailboxOps:
             raise ValueError(f"Refusing to delete mailbox '{mailbox}'. Re-run with confirm=True.")
         async with self._login_logout() as imap:
             await self.ensure_delimiter(imap)
-            await imap.delete(_quote_mailbox(self.to_imap_path(mailbox)))
+            response = await imap.delete(_quote_mailbox(self.to_imap_path(mailbox)))
+            _raise_for_imap_response(response, "DELETE", mailbox)
             return f"Successfully deleted mailbox '{mailbox}'"
 
     async def get_mailbox_status(self, mailbox: str = "INBOX") -> MailboxStatusResponse:
@@ -154,8 +176,12 @@ class MailboxOps:
             await self.ensure_delimiter(imap)
             quoted_mailbox = _quote_mailbox(self.to_imap_path(mailbox))
 
-            _, examine_lines = await imap.examine(quoted_mailbox)
-            _, status_lines = await imap.status(quoted_mailbox, "(MESSAGES RECENT UIDNEXT UIDVALIDITY UNSEEN)")
+            examine_lines = _raise_for_imap_response(await imap.examine(quoted_mailbox), "EXAMINE", mailbox)
+            status_lines = _raise_for_imap_response(
+                await imap.status(quoted_mailbox, "(MESSAGES RECENT UIDNEXT UIDVALIDITY UNSEEN)"),
+                "STATUS",
+                mailbox,
+            )
 
             flags: list[str] = []
             permanent_flags: list[str] = []
