@@ -6,7 +6,7 @@ import re
 import aioimaplib
 
 from mcp_email_server.config import EmailServer
-from mcp_email_server.emails._helpers import _create_ssl_context, _send_imap_id
+from mcp_email_server.emails._helpers import _create_ssl_context, _quote_mailbox, _send_imap_id
 from mcp_email_server.emails.models import MailboxInfo
 from mcp_email_server.log import logger
 
@@ -122,3 +122,9 @@ class MailboxOps:
                 )
 
             return mailboxes
+
+    async def create_mailbox(self, mailbox: str) -> str:
+        async with self._login_logout() as imap:
+            await self.ensure_delimiter(imap)
+            await imap.create(_quote_mailbox(self.to_imap_path(mailbox)))
+            return f"Successfully created mailbox '{mailbox}'"

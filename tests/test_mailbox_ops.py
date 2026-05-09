@@ -143,3 +143,20 @@ class TestMailboxListing:
         assert mailboxes[0].path == "INBOX/Newsletters"
         assert mailboxes[0].subscribed is True
         mock_imap.lsub.assert_awaited_once_with('""', "INBOX.%")
+
+
+class TestMailboxMutation:
+    @pytest.mark.asyncio
+    async def test_create_mailbox_translates_and_quotes_path(self, email_server):
+        ops = MailboxOps(email_server)
+        ops._delimiter = "."
+        mock_imap = AsyncMock()
+        mock_imap.create = AsyncMock(return_value=("OK", [b"create completed"]))
+
+        with patch.object(ops, "_login_logout") as mock_login_logout:
+            mock_login_logout.return_value.__aenter__.return_value = mock_imap
+            mock_login_logout.return_value.__aexit__.return_value = None
+            result = await ops.create_mailbox("INBOX/Projects/2026")
+
+        assert result == "Successfully created mailbox 'INBOX/Projects/2026'"
+        mock_imap.create.assert_awaited_once_with('"INBOX.Projects.2026"')
