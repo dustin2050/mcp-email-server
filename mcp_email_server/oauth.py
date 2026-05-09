@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import os
+import re
+import secrets
+import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -10,8 +13,10 @@ from mcp.server.auth.provider import (
     AccessToken,
     AuthorizationCode,
     AuthorizationParams,
+    AuthorizeError,
     OAuthAuthorizationServerProvider,
     RefreshToken,
+    construct_redirect_uri,
 )
 from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
 
@@ -25,6 +30,7 @@ DEFAULT_LOOPBACK_REDIRECT_URIS = [
 ACCESS_TOKEN_TTL_SECONDS = 60 * 60
 REFRESH_TOKEN_TTL_SECONDS = 30 * 24 * 60 * 60
 AUTHORIZATION_CODE_TTL_SECONDS = 10 * 60
+PKCE_CODE_CHALLENGE_RE = re.compile(r"^[A-Za-z0-9._~-]{43,128}$")
 
 
 @dataclass(frozen=True)
@@ -59,6 +65,10 @@ def _parse_redirect_uris(value: str | None) -> tuple[list[AnyUrl], bool]:
     if value:
         return TypeAdapter(list[AnyUrl]).validate_python(_split_csv(value)), False
     return TypeAdapter(list[AnyUrl]).validate_python(DEFAULT_LOOPBACK_REDIRECT_URIS), True
+
+
+def _normalize_url(url: AnyUrl) -> str:
+    return str(url)
 
 
 def build_oauth_runtime_config_from_env(env: dict[str, str] | None = None) -> OAuthRuntimeConfig | None:
@@ -100,6 +110,7 @@ class MCPOAuthProvider(
 ):
     def __init__(self, config: OAuthRuntimeConfig):
         self.config = config
+        self.authorization_codes: dict[str, AuthorizationCode] = {}
         self.client = OAuthClientInformationFull(
             client_id=config.client_id,
             client_secret=config.client_secret,
@@ -114,6 +125,11 @@ class MCPOAuthProvider(
             allow_loopback_redirects=config.allow_loopback_redirects,
         )
 
+    def _is_redirect_uri_allowed(self, redirect_uri: AnyUrl) -> bool:
+        if self.config.allow_loopback_redirects:
+            return _is_loopback_redirect_uri(redirect_uri)
+        return _normalize_url(redirect_uri) in {_normalize_url(item) for item in self.config.redirect_uris}
+
     async def get_client(self, client_id: str) -> OAuthClientInformationFull | None:
         if client_id == self.client.client_id:
             return self._auth_client
@@ -123,14 +139,48 @@ class MCPOAuthProvider(
         raise NotImplementedError
 
     async def authorize(self, client: OAuthClientInformationFull, params: AuthorizationParams) -> str:
-        raise NotImplementedError
+        if not self._is_redirect_uri_allowed(params.redirect_uri):
+            raise AuthorizeError(
+                error="invalid_request",
+                error_description="redirect URI is not allowed for this OAuth client",
+            )
+
+        scopes = params.scopes or [OAUTH_SCOPE]
+        invalid_scopes = [scope for scope in scopes if scope != OAUTH_SCOPE]
+        if invalid_scopes:
+            raise AuthorizeError(
+                error="invalid_scope",
+                error_description=f"requested scope is not allowed: {', '.join(invalid_scopes)}",
+            )
+
+        if not PKCE_CODE_CHALLENGE_RE.fullmatch(params.code_challenge):
+            raise AuthorizeError(
+                error="invalid_request",
+                error_description="PKCE code_challenge must be 43-128 unpadded base64url characters",
+            )
+
+        code = secrets.token_urlsafe(32)
+        self.authorization_codes[code] = AuthorizationCode(
+            code=code,
+            scopes=scopes,
+            expires_at=time.time() + AUTHORIZATION_CODE_TTL_SECONDS,
+            client_id=client.client_id or "",
+            code_challenge=params.code_challenge,
+            redirect_uri=params.redirect_uri,
+            redirect_uri_provided_explicitly=params.redirect_uri_provided_explicitly,
+            resource=params.resource,
+        )
+        return construct_redirect_uri(str(params.redirect_uri), code=code, state=params.state)
 
     async def load_authorization_code(
         self,
         client: OAuthClientInformationFull,
         authorization_code: str,
     ) -> AuthorizationCode | None:
-        raise NotImplementedError
+        code = self.authorization_codes.get(authorization_code)
+        if code is None or code.client_id != client.client_id:
+            return None
+        return code
 
     async def exchange_authorization_code(
         self,
