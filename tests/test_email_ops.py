@@ -5,6 +5,7 @@ import pytest
 
 from mcp_email_server.config import EmailServer
 from mcp_email_server.emails.mailbox import EmailOps, MailboxOps
+from mcp_email_server.emails.models import CopiedEmail
 
 
 @pytest.fixture
@@ -121,3 +122,30 @@ class TestEmailOpsMove:
         assert moved[0].success is False
         assert moved[0].method == "fallback"
         assert moved[0].error == "COPY succeeded and source was flagged \\Deleted, but EXPUNGE failed; no rollback performed."
+
+
+class TestEmailOpsCopy:
+    @pytest.mark.asyncio
+    async def test_copy_emails_continues_on_per_uid_failures(self, email_server):
+        mailbox_ops = MailboxOps(email_server)
+        mailbox_ops._delimiter = "."
+        email_ops = EmailOps(email_server, mailbox_ops)
+        mock_imap = AsyncMock()
+        mock_imap.select = AsyncMock(return_value=("OK", [b"selected"]))
+        mock_imap.uid = AsyncMock(
+            side_effect=[
+                ("OK", [b"copy 101"]),
+                ("NO", [b"copy 102 failed"]),
+            ]
+        )
+
+        with patch.object(email_ops, "_login_logout") as mock_login_logout:
+            mock_login_logout.return_value.__aenter__.return_value = mock_imap
+            mock_login_logout.return_value.__aexit__.return_value = None
+            copied = await email_ops.copy_emails(["101", "102"], "INBOX", "INBOX/Archive")
+
+        assert copied == [
+            CopiedEmail(message_id="101", success=True, error=None),
+            CopiedEmail(message_id="102", success=False, error="UID COPY failed with IMAP result NO: [b'copy 102 failed']"),
+        ]
+        mock_imap.expunge.assert_not_called()
