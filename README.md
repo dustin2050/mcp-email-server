@@ -9,6 +9,8 @@
 
 IMAP and SMTP via MCP Server
 
+For local `stdio` usage, no HTTP auth is needed. For Railway or other public HTTP deployments, `mcp-email-server` now supports OAuth 2.1 for `streamable-http` and `sse` transports using a static confidential client.
+
 - **Github repository**: <https://github.com/ai-zerolab/mcp-email-server/>
 - **Documentation** <https://ai-zerolab.github.io/mcp-email-server/>
 
@@ -112,6 +114,56 @@ services:
 Bare host entries such as `MCP_ALLOWED_HOSTS=mcp-email-server` also allow any port on that host. `MCP_ENABLE_DNS_REBINDING_PROTECTION=false`, `MCP_ALLOWED_HOSTS=*`, or `MCP_ALLOWED_ORIGINS=*` disables Host and Origin validation entirely. Use those options only in isolated local development environments.
 
 IPv6 literals in allowlists should use bracketed notation, such as `[::1]:*` and `http://[::1]:*`.
+
+### OAuth 2.1 and Railway Deployment
+
+Use OAuth for any public HTTP deployment. `stdio` remains unchanged and does not require OAuth.
+
+#### Required Railway Settings
+
+Set these variables in the Railway dashboard:
+
+| Variable | Required | Example | Notes |
+| --- | --- | --- | --- |
+| `MCP_OAUTH_CLIENT_ID` | Yes for HTTP OAuth | `claude-desktop` | Static OAuth client id |
+| `MCP_OAUTH_CLIENT_SECRET` | Yes for HTTP OAuth | `super-secret-value` | Static OAuth client secret |
+| `MCP_PUBLIC_URL` | Yes for HTTP OAuth | `https://your-app.up.railway.app` | Public base URL used as OAuth issuer |
+| `MCP_OAUTH_REDIRECT_URIS` | Recommended | `http://127.0.0.1:55432/callback,http://localhost:55432/callback` | Comma-separated redirect allowlist |
+| `MCP_HOST` | Yes | `0.0.0.0` | Bind host for Railway |
+| `MCP_PORT` | Yes | `8080` | Bind port supplied by Railway |
+| Existing email vars | Yes | see above | Keep your IMAP/SMTP configuration set |
+
+If `MCP_OAUTH_REDIRECT_URIS` is omitted, the server allows loopback redirect URIs on `127.0.0.1`, `localhost`, and `::1`.
+
+#### Start Command
+
+Use this Railway start command:
+
+```bash
+mcp-email-server streamable-http
+```
+
+#### Claude Desktop Connection
+
+In Claude Desktop or another MCP OAuth client, use:
+
+- Server URL = `https://your-app.up.railway.app/mcp`
+- OAuth `client_id` = value of `MCP_OAUTH_CLIENT_ID`
+- OAuth `client_secret` = value of `MCP_OAUTH_CLIENT_SECRET`
+
+OAuth metadata URL:
+
+- `https://your-app.up.railway.app/.well-known/oauth-authorization-server`
+
+Protected resource metadata URL:
+
+- `https://your-app.up.railway.app/.well-known/oauth-protected-resource/mcp`
+
+#### Notes
+
+- If `MCP_OAUTH_CLIENT_ID` is not set, HTTP transports still run but log `Running HTTP transport without OAuth authentication`.
+- `/healthz` is exposed for Railway health checks.
+- Revocation is enabled at `/revoke`.
 
 ### Enabling Attachment Downloads
 
