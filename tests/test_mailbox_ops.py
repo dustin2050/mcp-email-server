@@ -55,3 +55,43 @@ class TestMailboxOpsSkeleton:
         )
         mock_send_id.assert_awaited_once_with(mock_imap)
         mock_imap.logout.assert_awaited_once()
+
+
+class TestMailboxDelimiterTranslation:
+    @pytest.mark.asyncio
+    async def test_ensure_delimiter_parses_dot_and_caches(self, email_server):
+        ops = MailboxOps(email_server)
+        mock_imap = AsyncMock()
+        mock_imap.list = AsyncMock(return_value=("OK", [b'(\\HasNoChildren) "." "INBOX"']))
+
+        delimiter = await ops.ensure_delimiter(mock_imap)
+        cached = await ops.ensure_delimiter(mock_imap)
+
+        assert delimiter == "."
+        assert cached == "."
+        mock_imap.list.assert_awaited_once_with('""', "*")
+
+    @pytest.mark.asyncio
+    async def test_ensure_delimiter_parses_nil_as_flat_namespace(self, email_server):
+        ops = MailboxOps(email_server)
+        mock_imap = AsyncMock()
+        mock_imap.list = AsyncMock(return_value=("OK", [b'(\\Noselect) NIL "Archive"']))
+
+        delimiter = await ops.ensure_delimiter(mock_imap)
+
+        assert delimiter == ""
+
+    def test_to_imap_path_uses_cached_delimiter(self, email_server):
+        ops = MailboxOps(email_server)
+        ops._delimiter = "."
+        assert ops.to_imap_path("INBOX/Archive/2026") == "INBOX.Archive.2026"
+
+    def test_to_imap_path_rejects_empty_segments(self, email_server):
+        ops = MailboxOps(email_server)
+        ops._delimiter = "."
+        with pytest.raises(ValueError, match="Invalid mailbox path"):
+            ops.to_imap_path("INBOX//Archive")
+
+    def test_from_imap_path_rewrites_server_delimiter_to_slash(self, email_server):
+        ops = MailboxOps(email_server)
+        assert ops.from_imap_path("INBOX.Archive.2026", ".") == "INBOX/Archive/2026"
