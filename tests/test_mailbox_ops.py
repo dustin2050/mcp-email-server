@@ -240,7 +240,7 @@ class TestMailboxMutation:
 
 class TestMailboxStatus:
     @pytest.mark.asyncio
-    async def test_get_mailbox_status_parses_counts_and_flags(self, email_server):
+    async def test_get_mailbox_status_parses_examine_counts_and_flags(self, email_server):
         ops = MailboxOps(email_server)
         ops._delimiter = "."
         mock_imap = AsyncMock()
@@ -248,15 +248,14 @@ class TestMailboxStatus:
             return_value=Response(
                 "OK",
                 [
+                    b"* 12 EXISTS",
+                    b"* 1 RECENT",
+                    b"* OK [UNSEEN 3] First unseen.",
+                    b"* OK [UIDNEXT 45] Predicted next UID.",
+                    b"* OK [UIDVALIDITY 99] UIDs valid.",
                     b"* FLAGS (\\Seen \\Answered \\Flagged)",
                     b"* OK [PERMANENTFLAGS (\\Seen \\Answered \\Flagged \\*)] Flags permitted.",
                 ],
-            )
-        )
-        mock_imap.status = AsyncMock(
-            return_value=Response(
-                "OK",
-                [b'* STATUS "INBOX.Archive" (MESSAGES 12 RECENT 1 UIDNEXT 45 UIDVALIDITY 99 UNSEEN 3)'],
             )
         )
 
@@ -274,7 +273,6 @@ class TestMailboxStatus:
         assert status.flags == [r"\Seen", r"\Answered", r"\Flagged"]
         assert status.permanent_flags == [r"\Seen", r"\Answered", r"\Flagged", r"\*"]
         mock_imap.examine.assert_awaited_once_with('"INBOX.Archive"')
-        mock_imap.status.assert_awaited_once_with('"INBOX.Archive"', "(MESSAGES RECENT UIDNEXT UIDVALIDITY UNSEEN)")
 
     @pytest.mark.asyncio
     async def test_get_mailbox_status_raises_on_examine_no_response(self, email_server):
@@ -289,10 +287,8 @@ class TestMailboxStatus:
             with pytest.raises(RuntimeError, match=r"TRYCREATE.*mailbox missing"):
                 await ops.get_mailbox_status("INBOX/Archive")
 
-        mock_imap.status.assert_not_called()
-
     @pytest.mark.asyncio
-    async def test_get_mailbox_status_raises_on_status_no_response(self, email_server):
+    async def test_get_mailbox_status_defaults_missing_optional_examine_fields(self, email_server):
         ops = MailboxOps(email_server)
         ops._delimiter = "."
         mock_imap = AsyncMock()
@@ -300,15 +296,24 @@ class TestMailboxStatus:
             return_value=Response(
                 "OK",
                 [
+                    b"* 7 EXISTS",
+                    b"* 0 RECENT",
                     b"* FLAGS (\\Seen)",
                     b"* OK [PERMANENTFLAGS (\\Seen \\*)] Flags permitted.",
                 ],
             )
         )
-        mock_imap.status = AsyncMock(return_value=Response("NO", [b"[SERVERBUG] status disallowed"]))
 
         with patch.object(ops, "_login_logout") as mock_login_logout:
             mock_login_logout.return_value.__aenter__.return_value = mock_imap
             mock_login_logout.return_value.__aexit__.return_value = None
-            with pytest.raises(RuntimeError, match=r"SERVERBUG.*status disallowed"):
-                await ops.get_mailbox_status("INBOX/Archive")
+            status = await ops.get_mailbox_status("INBOX/Archive")
+
+        assert status.path == "INBOX/Archive"
+        assert status.messages == 7
+        assert status.recent == 0
+        assert status.unseen is None
+        assert status.uid_next is None
+        assert status.uid_validity is None
+        assert status.flags == [r"\Seen"]
+        assert status.permanent_flags == [r"\Seen", r"\*"]

@@ -11,9 +11,13 @@ from mcp_email_server.emails.models import CopiedEmail, MailboxInfo, MailboxStat
 from mcp_email_server.log import logger
 
 LIST_LINE_RE = re.compile(rb'^\((?P<flags>[^)]*)\)\s+(?P<delimiter>NIL|"[^"]*")\s+(?P<name>.+)$')
-STATUS_LINE_RE = re.compile(rb'^\* STATUS (?P<mailbox>"(?:[^"\\]|\\.)*"|[^ ]+) \((?P<items>[^)]*)\)$')
 FLAGS_LINE_RE = re.compile(rb'^\* FLAGS \((?P<flags>[^)]*)\)$')
 PERMANENT_FLAGS_LINE_RE = re.compile(rb'^\* OK \[PERMANENTFLAGS \((?P<flags>[^)]*)\)\]')
+EXISTS_LINE_RE = re.compile(rb'^\* (?P<count>\d+) EXISTS$')
+RECENT_LINE_RE = re.compile(rb'^\* (?P<count>\d+) RECENT$')
+UNSEEN_LINE_RE = re.compile(rb'^\* OK \[UNSEEN (?P<count>\d+)\]')
+UIDNEXT_LINE_RE = re.compile(rb'^\* OK \[UIDNEXT (?P<count>\d+)\]')
+UIDVALIDITY_LINE_RE = re.compile(rb'^\* OK \[UIDVALIDITY (?P<count>\d+)\]')
 
 
 def _decode_imap_line(line: bytes | str | object) -> str:
@@ -181,20 +185,41 @@ class MailboxOps(_ImapSession):
             quoted_mailbox = _quote_mailbox(self.to_imap_path(mailbox))
 
             examine_lines = _raise_for_imap_response(await imap.examine(quoted_mailbox), "EXAMINE", mailbox)
-            status_lines = _raise_for_imap_response(
-                await imap.status(quoted_mailbox, "(MESSAGES RECENT UIDNEXT UIDVALIDITY UNSEEN)"),
-                "STATUS",
-                mailbox,
-            )
 
+            messages = 0
+            recent = 0
+            unseen: int | None = None
+            uid_next: int | None = None
+            uid_validity: int | None = None
             flags: list[str] = []
             permanent_flags: list[str] = []
             for line in examine_lines:
                 if not isinstance(line, bytes):
                     continue
+                exists_match = EXISTS_LINE_RE.search(line)
+                if exists_match:
+                    messages = int(exists_match.group("count"))
+                    continue
+                recent_match = RECENT_LINE_RE.search(line)
+                if recent_match:
+                    recent = int(recent_match.group("count"))
+                    continue
+                unseen_match = UNSEEN_LINE_RE.search(line)
+                if unseen_match:
+                    unseen = int(unseen_match.group("count"))
+                    continue
+                uid_next_match = UIDNEXT_LINE_RE.search(line)
+                if uid_next_match:
+                    uid_next = int(uid_next_match.group("count"))
+                    continue
+                uid_validity_match = UIDVALIDITY_LINE_RE.search(line)
+                if uid_validity_match:
+                    uid_validity = int(uid_validity_match.group("count"))
+                    continue
                 flags_match = FLAGS_LINE_RE.search(line)
                 if flags_match:
                     flags = [flag.decode("utf-8") for flag in flags_match.group("flags").split()]
+                    continue
                 permanent_flags_match = PERMANENT_FLAGS_LINE_RE.search(line)
                 if permanent_flags_match:
                     permanent_flags = [
@@ -202,32 +227,13 @@ class MailboxOps(_ImapSession):
                         for flag in permanent_flags_match.group("flags").split()
                     ]
 
-            counts: dict[str, int] = {}
-            for line in status_lines:
-                if not isinstance(line, bytes):
-                    continue
-                status_match = STATUS_LINE_RE.search(line)
-                if not status_match:
-                    continue
-                items = status_match.group("items").decode("utf-8").split()
-                if len(items) % 2 != 0:
-                    raise RuntimeError(f"Could not parse STATUS response line: {line!r}")
-                counts = {
-                    items[index].lower(): int(items[index + 1])
-                    for index in range(0, len(items), 2)
-                }
-                break
-
-            if not counts:
-                raise RuntimeError(f"Could not parse STATUS response lines: {status_lines!r}")
-
             return MailboxStatusResponse(
                 path=mailbox,
-                messages=counts["messages"],
-                recent=counts["recent"],
-                unseen=counts.get("unseen"),
-                uid_next=counts.get("uidnext"),
-                uid_validity=counts.get("uidvalidity"),
+                messages=messages,
+                recent=recent,
+                unseen=unseen,
+                uid_next=uid_next,
+                uid_validity=uid_validity,
                 flags=flags,
                 permanent_flags=permanent_flags,
             )
