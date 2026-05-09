@@ -66,6 +66,8 @@ class AttachmentDownloadResponse(BaseModel):
 
 
 class MailboxInfo(BaseModel):
+    """Mailbox information"""
+
     path: str
     delimiter: str
     flags: list[str]
@@ -73,6 +75,8 @@ class MailboxInfo(BaseModel):
 
 
 class MailboxStatusResponse(BaseModel):
+    """Mailbox status response"""
+
     path: str
     messages: int
     recent: int
@@ -84,6 +88,8 @@ class MailboxStatusResponse(BaseModel):
 
 
 class MovedEmail(BaseModel):
+    """Moved email result"""
+
     message_id: str
     success: bool
     error: str | None = None
@@ -91,12 +97,16 @@ class MovedEmail(BaseModel):
 
 
 class CopiedEmail(BaseModel):
+    """Copied email result"""
+
     message_id: str
     success: bool
     error: str | None = None
 
 
 class MarkedEmail(BaseModel):
+    """Marked email result"""
+
     message_id: str
     success: bool
     error: str | None = None
