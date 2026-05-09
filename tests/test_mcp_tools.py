@@ -5,20 +5,33 @@ import pytest
 
 from mcp_email_server.app import (
     add_email_account,
+    copy_emails,
+    create_mailbox,
     delete_emails,
+    delete_mailbox,
     download_attachment,
+    get_mailbox_status,
     get_emails_content,
     list_available_accounts,
+    list_mailboxes,
     list_emails_metadata,
+    mark_emails,
+    move_emails,
+    rename_mailbox,
     send_email,
 )
 from mcp_email_server.config import EmailServer, EmailSettings, ProviderSettings
 from mcp_email_server.emails.models import (
     AttachmentDownloadResponse,
+    CopiedEmail,
     EmailBodyResponse,
     EmailContentBatchResponse,
     EmailMetadata,
     EmailMetadataPageResponse,
+    MailboxInfo,
+    MailboxStatusResponse,
+    MarkedEmail,
+    MovedEmail,
 )
 
 
@@ -435,6 +448,120 @@ class TestMcpTools:
 
             assert result == "Successfully deleted 1 email(s)"
             mock_handler.delete_emails.assert_called_once_with(["12345"], "Trash")
+
+    @pytest.mark.asyncio
+    async def test_list_mailboxes(self):
+        mock_handler = AsyncMock()
+        mock_handler.list_mailboxes.return_value = [
+            MailboxInfo(path="INBOX/Archive", delimiter=".", flags=[r"\HasNoChildren"], subscribed=False)
+        ]
+
+        with patch("mcp_email_server.app.dispatch_handler", return_value=mock_handler):
+            result = await list_mailboxes(account_name="test_account", pattern="INBOX/*")
+
+        assert result[0].path == "INBOX/Archive"
+        mock_handler.list_mailboxes.assert_called_once_with("INBOX/*", False)
+
+    @pytest.mark.asyncio
+    async def test_create_mailbox(self):
+        mock_handler = AsyncMock()
+        mock_handler.create_mailbox.return_value = "Successfully created mailbox 'INBOX/Archive'"
+
+        with patch("mcp_email_server.app.dispatch_handler", return_value=mock_handler):
+            result = await create_mailbox(account_name="test_account", mailbox="INBOX/Archive")
+
+        assert result == "Successfully created mailbox 'INBOX/Archive'"
+        mock_handler.create_mailbox.assert_called_once_with("INBOX/Archive")
+
+    @pytest.mark.asyncio
+    async def test_rename_mailbox(self):
+        mock_handler = AsyncMock()
+        mock_handler.rename_mailbox.return_value = "Successfully renamed mailbox 'INBOX/Old' to 'INBOX/New'"
+
+        with patch("mcp_email_server.app.dispatch_handler", return_value=mock_handler):
+            result = await rename_mailbox(account_name="test_account", old_mailbox="INBOX/Old", new_mailbox="INBOX/New")
+
+        assert "INBOX/New" in result
+        mock_handler.rename_mailbox.assert_called_once_with("INBOX/Old", "INBOX/New")
+
+    @pytest.mark.asyncio
+    async def test_delete_mailbox_requires_confirm(self):
+        with pytest.raises(ValueError, match="confirm=True"):
+            await delete_mailbox(account_name="test_account", mailbox="INBOX/Archive")
+
+    @pytest.mark.asyncio
+    async def test_delete_mailbox_confirmed(self):
+        mock_handler = AsyncMock()
+        mock_handler.delete_mailbox.return_value = "Successfully deleted mailbox 'INBOX/Archive'"
+
+        with patch("mcp_email_server.app.dispatch_handler", return_value=mock_handler):
+            result = await delete_mailbox(account_name="test_account", mailbox="INBOX/Archive", confirm=True)
+
+        assert result == "Successfully deleted mailbox 'INBOX/Archive'"
+        mock_handler.delete_mailbox.assert_called_once_with("INBOX/Archive", True)
+
+    @pytest.mark.asyncio
+    async def test_get_mailbox_status(self):
+        mock_handler = AsyncMock()
+        mock_handler.get_mailbox_status.return_value = MailboxStatusResponse(
+            path="INBOX",
+            messages=5,
+            recent=1,
+            unseen=2,
+            uid_next=6,
+            uid_validity=9,
+            flags=[r"\Seen"],
+            permanent_flags=[r"\Seen", r"\*"],
+        )
+
+        with patch("mcp_email_server.app.dispatch_handler", return_value=mock_handler):
+            result = await get_mailbox_status(account_name="test_account", mailbox="INBOX")
+
+        assert result.messages == 5
+        mock_handler.get_mailbox_status.assert_called_once_with("INBOX")
+
+    @pytest.mark.asyncio
+    async def test_move_emails(self):
+        mock_handler = AsyncMock()
+        mock_handler.move_emails.return_value = [MovedEmail(message_id="1", success=True, error=None, method="native")]
+
+        with patch("mcp_email_server.app.dispatch_handler", return_value=mock_handler):
+            result = await move_emails(
+                account_name="test_account",
+                email_ids=["1"],
+                source_mailbox="INBOX",
+                destination_mailbox="Archive",
+            )
+
+        assert result[0].method == "native"
+        mock_handler.move_emails.assert_called_once_with(["1"], "INBOX", "Archive")
+
+    @pytest.mark.asyncio
+    async def test_copy_emails(self):
+        mock_handler = AsyncMock()
+        mock_handler.copy_emails.return_value = [CopiedEmail(message_id="1", success=True, error=None)]
+
+        with patch("mcp_email_server.app.dispatch_handler", return_value=mock_handler):
+            result = await copy_emails(
+                account_name="test_account",
+                email_ids=["1"],
+                source_mailbox="INBOX",
+                destination_mailbox="Archive",
+            )
+
+        assert result[0].success is True
+        mock_handler.copy_emails.assert_called_once_with(["1"], "INBOX", "Archive")
+
+    @pytest.mark.asyncio
+    async def test_mark_emails(self):
+        mock_handler = AsyncMock()
+        mock_handler.mark_emails.return_value = [MarkedEmail(message_id="1", success=True, error=None)]
+
+        with patch("mcp_email_server.app.dispatch_handler", return_value=mock_handler):
+            result = await mark_emails(account_name="test_account", email_ids=["1"], mailbox="INBOX", seen=True)
+
+        assert result[0].success is True
+        mock_handler.mark_emails.assert_called_once_with(["1"], mailbox="INBOX", seen=True, flagged=None, answered=None)
 
     @pytest.mark.asyncio
     async def test_download_attachment_disabled(self):

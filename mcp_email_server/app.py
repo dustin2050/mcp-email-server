@@ -13,8 +13,13 @@ from mcp_email_server.config import (
 from mcp_email_server.emails.dispatcher import dispatch_handler
 from mcp_email_server.emails.models import (
     AttachmentDownloadResponse,
+    CopiedEmail,
     EmailContentBatchResponse,
     EmailMetadataPageResponse,
+    MailboxInfo,
+    MailboxStatusResponse,
+    MarkedEmail,
+    MovedEmail,
 )
 
 mcp = FastMCP("email")
@@ -219,3 +224,92 @@ async def download_attachment(
 
     handler = dispatch_handler(account_name)
     return await handler.download_attachment(email_id, attachment_name, save_path, mailbox)
+
+
+@mcp.tool(description="List available mailboxes for an account.")
+async def list_mailboxes(
+    account_name: Annotated[str, Field(description="The name of the email account.")],
+    pattern: Annotated[str, Field(default="*", description="Mailbox pattern in canonical user syntax.")] = "*",
+    subscribed_only: Annotated[bool, Field(default=False, description="If True, use IMAP LSUB.")] = False,
+) -> list[MailboxInfo]:
+    handler = dispatch_handler(account_name)
+    return await handler.list_mailboxes(pattern, subscribed_only)
+
+
+@mcp.tool(description="Create a mailbox on the IMAP server.")
+async def create_mailbox(
+    account_name: Annotated[str, Field(description="The name of the email account.")],
+    mailbox: Annotated[str, Field(description="Mailbox path in canonical user syntax.")],
+) -> str:
+    handler = dispatch_handler(account_name)
+    return await handler.create_mailbox(mailbox)
+
+
+@mcp.tool(description="Rename a mailbox on the IMAP server.")
+async def rename_mailbox(
+    account_name: Annotated[str, Field(description="The name of the email account.")],
+    old_mailbox: Annotated[str, Field(description="Existing mailbox path in canonical user syntax.")],
+    new_mailbox: Annotated[str, Field(description="New mailbox path in canonical user syntax.")],
+) -> str:
+    handler = dispatch_handler(account_name)
+    return await handler.rename_mailbox(old_mailbox, new_mailbox)
+
+
+@mcp.tool(description="Delete a mailbox from the IMAP server. Requires confirm=True.")
+async def delete_mailbox(
+    account_name: Annotated[str, Field(description="The name of the email account.")],
+    mailbox: Annotated[str, Field(description="Mailbox path in canonical user syntax.")],
+    confirm: Annotated[bool, Field(default=False, description="Must be True to delete the mailbox.")] = False,
+) -> str:
+    if not confirm:
+        raise ValueError(f"Refusing to delete mailbox '{mailbox}'. Re-run with confirm=True.")
+    handler = dispatch_handler(account_name)
+    return await handler.delete_mailbox(mailbox, confirm)
+
+
+@mcp.tool(description="Get message counts and flags for a mailbox.")
+async def get_mailbox_status(
+    account_name: Annotated[str, Field(description="The name of the email account.")],
+    mailbox: Annotated[str, Field(default="INBOX", description="Mailbox path in canonical user syntax.")] = "INBOX",
+) -> MailboxStatusResponse:
+    handler = dispatch_handler(account_name)
+    return await handler.get_mailbox_status(mailbox)
+
+
+@mcp.tool(description="Move emails to another mailbox and return per-message results.")
+async def move_emails(
+    account_name: Annotated[str, Field(description="The name of the email account.")],
+    email_ids: Annotated[list[str], Field(description="Email UIDs to move.")],
+    source_mailbox: Annotated[str, Field(description="Source mailbox in canonical user syntax.")],
+    destination_mailbox: Annotated[str, Field(description="Destination mailbox in canonical user syntax.")],
+) -> list[MovedEmail]:
+    handler = dispatch_handler(account_name)
+    return await handler.move_emails(email_ids, source_mailbox, destination_mailbox)
+
+
+@mcp.tool(description="Copy emails to another mailbox and return per-message results.")
+async def copy_emails(
+    account_name: Annotated[str, Field(description="The name of the email account.")],
+    email_ids: Annotated[list[str], Field(description="Email UIDs to copy.")],
+    source_mailbox: Annotated[str, Field(description="Source mailbox in canonical user syntax.")],
+    destination_mailbox: Annotated[str, Field(description="Destination mailbox in canonical user syntax.")],
+) -> list[CopiedEmail]:
+    handler = dispatch_handler(account_name)
+    return await handler.copy_emails(email_ids, source_mailbox, destination_mailbox)
+
+
+@mcp.tool(description="Set or clear Seen, Flagged, and Answered flags for emails.")
+async def mark_emails(
+    account_name: Annotated[str, Field(description="The name of the email account.")],
+    email_ids: Annotated[list[str], Field(description="Email UIDs to update.")],
+    mailbox: Annotated[str, Field(default="INBOX", description="Mailbox containing the emails.")] = "INBOX",
+    seen: Annotated[bool | None, Field(default=None, description="True=set, False=clear, None=leave unchanged.")] = None,
+    flagged: Annotated[
+        bool | None, Field(default=None, description="True=set, False=clear, None=leave unchanged.")
+    ] = None,
+    answered: Annotated[
+        bool | None, Field(default=None, description="True=set, False=clear, None=leave unchanged.")
+    ] = None,
+) -> list[MarkedEmail]:
+    handler = dispatch_handler(account_name)
+    return await handler.mark_emails(email_ids, mailbox=mailbox, seen=seen, flagged=flagged, answered=answered)
