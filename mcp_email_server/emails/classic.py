@@ -4,6 +4,7 @@ import asyncio
 import email.utils
 import mimetypes
 import re
+import ssl  # noqa: F401  resolved via typing.get_type_hints on _get_smtp_ssl_context
 import time
 from collections.abc import AsyncGenerator
 from datetime import datetime, timezone
