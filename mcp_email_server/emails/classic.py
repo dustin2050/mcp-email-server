@@ -1,8 +1,9 @@
+from __future__ import annotations
+
 import asyncio
 import email.utils
 import mimetypes
 import re
-import ssl
 import time
 from collections.abc import AsyncGenerator
 from datetime import datetime, timezone
@@ -18,6 +19,7 @@ from typing import Any
 import aioimaplib
 import aiosmtplib
 
+from mcp_email_server.emails._helpers import _create_ssl_context, _quote_mailbox, _send_imap_id
 from mcp_email_server.config import EmailServer, EmailSettings
 from mcp_email_server.emails import EmailHandler
 from mcp_email_server.emails.models import (
@@ -36,66 +38,6 @@ from mcp_email_server.log import logger
 
 # Maximum body length before truncation (characters)
 MAX_BODY_LENGTH = 20000
-
-
-def _quote_mailbox(mailbox: str) -> str:
-    """Quote mailbox name for IMAP compatibility.
-
-    Some IMAP servers (notably Proton Mail Bridge) require mailbox names
-    to be quoted. This is valid per RFC 3501 and works with all IMAP servers.
-
-    Per RFC 3501 Section 9 (Formal Syntax), quoted strings must escape
-    backslashes and double-quote characters with a preceding backslash.
-
-    See: https://github.com/ai-zerolab/mcp-email-server/issues/87
-    See: https://www.rfc-editor.org/rfc/rfc3501#section-9
-    """
-    # Per RFC 3501, literal double-quote characters in a quoted string must
-    # be escaped with a backslash. Backslashes themselves must also be escaped.
-    escaped = mailbox.replace("\\", "\\\\").replace('"', r"\"")
-    return f'"{escaped}"'
-
-
-async def _send_imap_id(imap: aioimaplib.IMAP4 | aioimaplib.IMAP4_SSL) -> None:
-    """Send IMAP ID command with fallback for strict servers like 163.com.
-
-    aioimaplib's id() method sends ID command with spaces between parentheses
-    and content (e.g., 'ID ( "name" "value" )'), which some strict IMAP servers
-    like 163.com reject with 'BAD Parse command error'.
-
-    This function first tries the standard id() method, and if it fails,
-    falls back to sending a raw command with correct format.
-
-    See: https://github.com/ai-zerolab/mcp-email-server/issues/85
-    """
-    try:
-        response = await imap.id(name="mcp-email-server", version="1.0.0")
-        if response.result != "OK":
-            # Fallback for strict servers (e.g., 163.com)
-            # Send raw command with correct parenthesis format
-            await imap.protocol.execute(
-                aioimaplib.Command(
-                    "ID",
-                    imap.protocol.new_tag(),
-                    '("name" "mcp-email-server" "version" "1.0.0")',
-                )
-            )
-    except Exception as e:
-        logger.warning(f"IMAP ID command failed: {e!s}")
-
-
-def _create_ssl_context(verify_ssl: bool) -> ssl.SSLContext | None:
-    """Create SSL context for SMTP/IMAP connections.
-
-    Returns None for default verification, or permissive context
-    for self-signed certificates when verify_ssl=False.
-    """
-    if verify_ssl:
-        return None
-    ctx = ssl.create_default_context()
-    ctx.check_hostname = False
-    ctx.verify_mode = ssl.CERT_NONE
-    return ctx
 
 
 # Backwards-compatible alias
