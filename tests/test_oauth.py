@@ -1,7 +1,6 @@
 from urllib.parse import parse_qs, urlparse
 
 import pytest
-
 from mcp.server.auth.provider import AuthorizationParams, AuthorizeError
 from mcp.shared.auth import OAuthClientInformationFull
 
@@ -228,7 +227,7 @@ async def test_exchange_authorization_code_mints_access_and_refresh_tokens(monke
 
     token = await provider.exchange_authorization_code(client, auth_code)
 
-    assert token.token_type == "Bearer"
+    assert token.token_type == "Bearer"  # noqa: S105
     assert token.scope == "mcp"
     assert token.refresh_token is not None
     assert token.expires_in == 3600

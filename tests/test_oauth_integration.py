@@ -85,7 +85,7 @@ def _issue_access_token(client: TestClient) -> str:
 
     assert token_response.status_code == 200
     payload = token_response.json()
-    assert payload["token_type"] == "Bearer"
+    assert payload["token_type"] == "Bearer"  # noqa: S105
     assert payload["scope"] == "mcp"
     return payload["access_token"]
 
@@ -104,7 +104,7 @@ def test_oauth_metadata_advertises_revocation_and_s256(oauth_client: TestClient)
     body = response.json()
     assert body["issuer"] == "https://mail.example.com/"
     assert body["authorization_endpoint"] == "https://mail.example.com/authorize"
-    assert body["token_endpoint"] == "https://mail.example.com/token"
+    assert body["token_endpoint"] == "https://mail.example.com/token"  # noqa: S105
     assert body["revocation_endpoint"] == "https://mail.example.com/revoke"
     assert body["code_challenge_methods_supported"] == ["S256"]
 

@@ -7,8 +7,6 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
-from pydantic import AnyHttpUrl, AnyUrl, Field, TypeAdapter
-
 from mcp.server.auth.provider import (
     AccessToken,
     AuthorizationCode,
@@ -21,6 +19,7 @@ from mcp.server.auth.provider import (
 )
 from mcp.server.auth.settings import AuthSettings, ClientRegistrationOptions, RevocationOptions
 from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
+from pydantic import AnyHttpUrl, AnyUrl, Field, TypeAdapter
 
 OAUTH_SCOPE = "mcp"
 DEFAULT_LOOPBACK_REDIRECT_URIS = [
@@ -157,7 +156,7 @@ class MCPOAuthProvider(
             grant_types=["authorization_code", "refresh_token"],
             response_types=["code"],
             scope=OAUTH_SCOPE,
-            token_endpoint_auth_method="client_secret_post",
+            token_endpoint_auth_method="client_secret_post",  # noqa: S106
         )
         self._auth_client = StaticOAuthClientInformation(
             **self.client.model_dump(),
