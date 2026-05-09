@@ -279,6 +279,51 @@ class TestEmailClient:
                     mock_fetch_headers.assert_called_once_with(mock_imap, ["3", "2", "1"])
 
     @pytest.mark.asyncio
+    async def test_get_emails_stream_passes_body_contains_and_text_to_uid_search(self, email_client):
+        mock_imap = AsyncMock()
+        mock_imap._client_task = asyncio.Future()
+        mock_imap._client_task.set_result(None)
+        mock_imap.wait_hello_from_server = AsyncMock()
+        mock_imap.login = AsyncMock()
+        mock_imap.select = AsyncMock()
+        mock_imap.uid_search = AsyncMock(return_value=(None, [b"1"]))
+        mock_imap.logout = AsyncMock()
+
+        with patch.object(email_client, "imap_class", return_value=mock_imap):
+            with patch.object(email_client, "_batch_fetch_dates", return_value={"1": datetime(2024, 1, 1, tzinfo=timezone.utc)}):
+                with patch.object(
+                    email_client,
+                    "_batch_fetch_headers",
+                    return_value={"1": {"email_id": "1", "subject": "Subject", "from": "a@test.com", "to": [], "date": datetime(2024, 1, 1, tzinfo=timezone.utc), "attachments": []}},
+                ):
+                    emails = []
+                    async for email_data in email_client.get_emails_metadata_stream(
+                        body_contains="invoice",
+                        text="follow up",
+                    ):
+                        emails.append(email_data)
+
+        assert len(emails) == 1
+        mock_imap.uid_search.assert_called_once_with("BODY", "invoice", "TEXT", '"follow up"')
+
+    @pytest.mark.asyncio
+    async def test_get_email_count_passes_body_contains_and_text_to_uid_search(self, email_client):
+        mock_imap = AsyncMock()
+        mock_imap._client_task = asyncio.Future()
+        mock_imap._client_task.set_result(None)
+        mock_imap.wait_hello_from_server = AsyncMock()
+        mock_imap.login = AsyncMock()
+        mock_imap.select = AsyncMock()
+        mock_imap.uid_search = AsyncMock(return_value=(None, [b"1 2"]))
+        mock_imap.logout = AsyncMock()
+
+        with patch.object(email_client, "imap_class", return_value=mock_imap):
+            count = await email_client.get_email_count(body_contains="invoice", text="follow up")
+
+        assert count == 2
+        mock_imap.uid_search.assert_called_once_with("BODY", "invoice", "TEXT", '"follow up"')
+
+    @pytest.mark.asyncio
     async def test_get_email_count(self, email_client):
         """Test getting email count."""
         # Mock IMAP client
