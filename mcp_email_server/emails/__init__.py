@@ -5,8 +5,13 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from mcp_email_server.emails.models import (
         AttachmentDownloadResponse,
+        CopiedEmail,
         EmailContentBatchResponse,
         EmailMetadataPageResponse,
+        MailboxInfo,
+        MailboxStatusResponse,
+        MarkedEmail,
+        MovedEmail,
     )
 
 
@@ -19,6 +24,8 @@ class EmailHandler(abc.ABC):
         before: datetime | None = None,
         since: datetime | None = None,
         subject: str | None = None,
+        body_contains: str | None = None,
+        text: str | None = None,
         from_address: str | None = None,
         to_address: str | None = None,
         order: str = "desc",
@@ -36,6 +43,8 @@ class EmailHandler(abc.ABC):
             before: Filter emails before this datetime.
             since: Filter emails since this datetime.
             subject: Filter by subject (substring match).
+            body_contains: Filter by IMAP BODY search.
+            text: Filter by IMAP TEXT search.
             from_address: Filter by sender address.
             to_address: Filter by recipient address.
             order: Sort order ('asc' or 'desc').
@@ -105,3 +114,52 @@ class EmailHandler(abc.ABC):
         Returns:
             AttachmentDownloadResponse with download result information.
         """
+
+    @abc.abstractmethod
+    async def list_mailboxes(self, pattern: str = "*", subscribed_only: bool = False) -> list["MailboxInfo"]:
+        """List mailboxes."""
+
+    @abc.abstractmethod
+    async def create_mailbox(self, mailbox: str) -> str:
+        """Create a mailbox."""
+
+    @abc.abstractmethod
+    async def rename_mailbox(self, old_mailbox: str, new_mailbox: str) -> str:
+        """Rename a mailbox."""
+
+    @abc.abstractmethod
+    async def delete_mailbox(self, mailbox: str, confirm: bool = False) -> str:
+        """Delete a mailbox."""
+
+    @abc.abstractmethod
+    async def get_mailbox_status(self, mailbox: str = "INBOX") -> "MailboxStatusResponse":
+        """Get mailbox status."""
+
+    @abc.abstractmethod
+    async def move_emails(
+        self,
+        email_ids: list[str],
+        source_mailbox: str,
+        destination_mailbox: str,
+    ) -> list["MovedEmail"]:
+        """Move emails."""
+
+    @abc.abstractmethod
+    async def copy_emails(
+        self,
+        email_ids: list[str],
+        source_mailbox: str,
+        destination_mailbox: str,
+    ) -> list["CopiedEmail"]:
+        """Copy emails."""
+
+    @abc.abstractmethod
+    async def mark_emails(
+        self,
+        email_ids: list[str],
+        mailbox: str = "INBOX",
+        seen: bool | None = None,
+        flagged: bool | None = None,
+        answered: bool | None = None,
+    ) -> list["MarkedEmail"]:
+        """Mark emails."""

@@ -22,10 +22,15 @@ from mcp_email_server.config import EmailServer, EmailSettings
 from mcp_email_server.emails import EmailHandler
 from mcp_email_server.emails.models import (
     AttachmentDownloadResponse,
+    CopiedEmail,
     EmailBodyResponse,
     EmailContentBatchResponse,
     EmailMetadata,
     EmailMetadataPageResponse,
+    MailboxInfo,
+    MailboxStatusResponse,
+    MarkedEmail,
+    MovedEmail,
 )
 from mcp_email_server.log import logger
 
@@ -1180,3 +1185,44 @@ class ClassicEmailHandler(EmailHandler):
             size=result["size"],
             saved_path=result["saved_path"],
         )
+
+    async def list_mailboxes(self, pattern: str = "*", subscribed_only: bool = False) -> list[MailboxInfo]:
+        raise NotImplementedError("Task 15 wires MailboxOps into ClassicEmailHandler")
+
+    async def create_mailbox(self, mailbox: str) -> str:
+        raise NotImplementedError("Task 15 wires MailboxOps into ClassicEmailHandler")
+
+    async def rename_mailbox(self, old_mailbox: str, new_mailbox: str) -> str:
+        raise NotImplementedError("Task 15 wires MailboxOps into ClassicEmailHandler")
+
+    async def delete_mailbox(self, mailbox: str, confirm: bool = False) -> str:
+        raise NotImplementedError("Task 15 wires MailboxOps into ClassicEmailHandler")
+
+    async def get_mailbox_status(self, mailbox: str = "INBOX") -> MailboxStatusResponse:
+        raise NotImplementedError("Task 15 wires MailboxOps into ClassicEmailHandler")
+
+    async def move_emails(
+        self,
+        email_ids: list[str],
+        source_mailbox: str,
+        destination_mailbox: str,
+    ) -> list[MovedEmail]:
+        raise NotImplementedError("Task 15 wires EmailOps into ClassicEmailHandler")
+
+    async def copy_emails(
+        self,
+        email_ids: list[str],
+        source_mailbox: str,
+        destination_mailbox: str,
+    ) -> list[CopiedEmail]:
+        raise NotImplementedError("Task 15 wires EmailOps into ClassicEmailHandler")
+
+    async def mark_emails(
+        self,
+        email_ids: list[str],
+        mailbox: str = "INBOX",
+        seen: bool | None = None,
+        flagged: bool | None = None,
+        answered: bool | None = None,
+    ) -> list[MarkedEmail]:
+        raise NotImplementedError("Task 15 wires EmailOps into ClassicEmailHandler")
