@@ -506,6 +506,17 @@ class TestMcpTools:
         mock_handler.list_mailboxes.assert_called_once_with("INBOX/*", False)
 
     @pytest.mark.asyncio
+    async def test_list_mailboxes_defaults(self):
+        mock_handler = AsyncMock()
+        mock_handler.list_mailboxes.return_value = []
+
+        with patch("mcp_email_server.app.dispatch_handler", return_value=mock_handler):
+            result = await list_mailboxes(account_name="test_account")
+
+        assert result == []
+        mock_handler.list_mailboxes.assert_called_once_with("*", False)
+
+    @pytest.mark.asyncio
     async def test_create_mailbox(self):
         mock_handler = AsyncMock()
         mock_handler.create_mailbox.return_value = "Successfully created mailbox 'INBOX/Archive'"
@@ -605,6 +616,82 @@ class TestMcpTools:
 
         assert result[0].success is True
         mock_handler.mark_emails.assert_called_once_with(["1"], mailbox="INBOX", seen=True, flagged=None, answered=None)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("tool", "kwargs", "handler_method", "handler_return"),
+        [
+            (
+                list_mailboxes,
+                {"account_name": "test_account"},
+                "list_mailboxes",
+                [MailboxInfo(path="INBOX", delimiter=".", flags=[], subscribed=False)],
+            ),
+            (
+                create_mailbox,
+                {"account_name": "test_account", "mailbox": "INBOX/Archive"},
+                "create_mailbox",
+                "Successfully created mailbox 'INBOX/Archive'",
+            ),
+            (
+                rename_mailbox,
+                {"account_name": "test_account", "old_mailbox": "INBOX/Old", "new_mailbox": "INBOX/New"},
+                "rename_mailbox",
+                "Successfully renamed mailbox 'INBOX/Old' to 'INBOX/New'",
+            ),
+            (
+                get_mailbox_status,
+                {"account_name": "test_account"},
+                "get_mailbox_status",
+                MailboxStatusResponse(
+                    path="INBOX",
+                    messages=1,
+                    recent=0,
+                    unseen=0,
+                    uid_next=2,
+                    uid_validity=9,
+                    flags=[],
+                    permanent_flags=[],
+                ),
+            ),
+            (
+                move_emails,
+                {
+                    "account_name": "test_account",
+                    "email_ids": ["1"],
+                    "source_mailbox": "INBOX",
+                    "destination_mailbox": "Archive",
+                },
+                "move_emails",
+                [MovedEmail(message_id="1", success=True, error=None, method="native")],
+            ),
+            (
+                copy_emails,
+                {
+                    "account_name": "test_account",
+                    "email_ids": ["1"],
+                    "source_mailbox": "INBOX",
+                    "destination_mailbox": "Archive",
+                },
+                "copy_emails",
+                [CopiedEmail(message_id="1", success=True, error=None)],
+            ),
+            (
+                mark_emails,
+                {"account_name": "test_account", "email_ids": ["1"], "mailbox": "INBOX", "seen": True},
+                "mark_emails",
+                [MarkedEmail(message_id="1", success=True, error=None)],
+            ),
+        ],
+    )
+    async def test_mailbox_management_tool_smoke_matrix(self, tool, kwargs, handler_method, handler_return):
+        mock_handler = AsyncMock()
+        getattr(mock_handler, handler_method).return_value = handler_return
+
+        with patch("mcp_email_server.app.dispatch_handler", return_value=mock_handler):
+            result = await tool(**kwargs)
+
+        assert result == handler_return
 
     @pytest.mark.asyncio
     async def test_download_attachment_disabled(self):
