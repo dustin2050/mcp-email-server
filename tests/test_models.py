@@ -1,9 +1,14 @@
 from datetime import datetime, timezone
 
 from mcp_email_server.emails.models import (
+    CopiedEmail,
     EmailBodyResponse,
     EmailMetadata,
     EmailMetadataPageResponse,
+    MailboxInfo,
+    MailboxStatusResponse,
+    MarkedEmail,
+    MovedEmail,
 )
 
 
@@ -168,3 +173,57 @@ def test_email_body_response_includes_message_id():
         attachments=[],
     )
     assert response.message_id == "<abc123@example.com>"
+
+
+def test_mailbox_info_model():
+    mailbox = MailboxInfo(
+        path="INBOX/Archive",
+        delimiter=".",
+        flags=[r"\HasNoChildren"],
+        subscribed=True,
+    )
+    assert mailbox.path == "INBOX/Archive"
+    assert mailbox.delimiter == "."
+    assert mailbox.flags == [r"\HasNoChildren"]
+    assert mailbox.subscribed is True
+
+
+def test_mailbox_status_response_model():
+    status = MailboxStatusResponse(
+        path="INBOX/Archive",
+        messages=12,
+        recent=1,
+        unseen=3,
+        uid_next=45,
+        uid_validity=99,
+        flags=[r"\Seen", r"\Answered"],
+        permanent_flags=[r"\Seen", r"\Answered", r"\*"],
+    )
+    assert status.path == "INBOX/Archive"
+    assert status.messages == 12
+    assert status.recent == 1
+    assert status.unseen == 3
+    assert status.uid_next == 45
+    assert status.uid_validity == 99
+
+
+def test_moved_email_model():
+    moved = MovedEmail(message_id="101", success=True, error=None, method="native")
+    assert moved.message_id == "101"
+    assert moved.success is True
+    assert moved.error is None
+    assert moved.method == "native"
+
+
+def test_copied_email_model():
+    copied = CopiedEmail(message_id="202", success=False, error="copy failed")
+    assert copied.message_id == "202"
+    assert copied.success is False
+    assert copied.error == "copy failed"
+
+
+def test_marked_email_model():
+    marked = MarkedEmail(message_id="303", success=True, error=None)
+    assert marked.message_id == "303"
+    assert marked.success is True
+    assert marked.error is None

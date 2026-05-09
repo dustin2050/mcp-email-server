@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel
 
@@ -63,3 +63,40 @@ class AttachmentDownloadResponse(BaseModel):
     mime_type: str
     size: int
     saved_path: str
+
+
+class MailboxInfo(BaseModel):
+    path: str
+    delimiter: str
+    flags: list[str]
+    subscribed: bool
+
+
+class MailboxStatusResponse(BaseModel):
+    path: str
+    messages: int
+    recent: int
+    unseen: int | None = None
+    uid_next: int | None = None
+    uid_validity: int | None = None
+    flags: list[str]
+    permanent_flags: list[str]
+
+
+class MovedEmail(BaseModel):
+    message_id: str
+    success: bool
+    error: str | None = None
+    method: Literal["native", "fallback"]
+
+
+class CopiedEmail(BaseModel):
+    message_id: str
+    success: bool
+    error: str | None = None
+
+
+class MarkedEmail(BaseModel):
+    message_id: str
+    success: bool
+    error: str | None = None
