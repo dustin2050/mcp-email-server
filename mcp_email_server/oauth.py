@@ -110,7 +110,14 @@ class MCPOAuthProvider(
 ):
     def __init__(self, config: OAuthRuntimeConfig):
         self.config = config
+        self.access_token_model = AccessToken
+        self.refresh_token_model = RefreshToken
         self.authorization_codes: dict[str, AuthorizationCode] = {}
+        self.access_tokens: dict[str, AccessToken] = {}
+        self.refresh_tokens: dict[str, RefreshToken] = {}
+        self.access_to_refresh_tokens: dict[str, str] = {}
+        self.refresh_to_access_tokens: dict[str, str] = {}
+        self.refresh_token_resources: dict[str, str | None] = {}
         self.client = OAuthClientInformationFull(
             client_id=config.client_id,
             client_secret=config.client_secret,
@@ -129,6 +136,60 @@ class MCPOAuthProvider(
         if self.config.allow_loopback_redirects:
             return _is_loopback_redirect_uri(redirect_uri)
         return _normalize_url(redirect_uri) in {_normalize_url(item) for item in self.config.redirect_uris}
+
+    def _build_oauth_token(
+        self,
+        client_id: str,
+        scopes: list[str],
+        resource: str | None = None,
+    ) -> OAuthToken:
+        now = int(time.time())
+        access_token_value = secrets.token_urlsafe(32)
+        refresh_token_value = secrets.token_urlsafe(32)
+        access_token = self.access_token_model(
+            token=access_token_value,
+            client_id=client_id,
+            scopes=scopes,
+            expires_at=now + ACCESS_TOKEN_TTL_SECONDS,
+            resource=resource,
+        )
+        refresh_token = self.refresh_token_model(
+            token=refresh_token_value,
+            client_id=client_id,
+            scopes=scopes,
+            expires_at=now + REFRESH_TOKEN_TTL_SECONDS,
+        )
+
+        self.access_tokens[access_token_value] = access_token
+        self.refresh_tokens[refresh_token_value] = refresh_token
+        self.access_to_refresh_tokens[access_token_value] = refresh_token_value
+        self.refresh_to_access_tokens[refresh_token_value] = access_token_value
+        self.refresh_token_resources[refresh_token_value] = resource
+
+        return OAuthToken(
+            access_token=access_token_value,
+            expires_in=ACCESS_TOKEN_TTL_SECONDS,
+            scope=" ".join(scopes),
+            refresh_token=refresh_token_value,
+        )
+
+    def _revoke_token_pair(
+        self,
+        access_token_value: str | None = None,
+        refresh_token_value: str | None = None,
+    ) -> None:
+        if access_token_value is None and refresh_token_value is not None:
+            access_token_value = self.refresh_to_access_tokens.get(refresh_token_value)
+        if refresh_token_value is None and access_token_value is not None:
+            refresh_token_value = self.access_to_refresh_tokens.get(access_token_value)
+
+        if access_token_value is not None:
+            self.access_tokens.pop(access_token_value, None)
+            self.access_to_refresh_tokens.pop(access_token_value, None)
+        if refresh_token_value is not None:
+            self.refresh_tokens.pop(refresh_token_value, None)
+            self.refresh_to_access_tokens.pop(refresh_token_value, None)
+            self.refresh_token_resources.pop(refresh_token_value, None)
 
     async def get_client(self, client_id: str) -> OAuthClientInformationFull | None:
         if client_id == self.client.client_id:
@@ -187,14 +248,25 @@ class MCPOAuthProvider(
         client: OAuthClientInformationFull,
         authorization_code: AuthorizationCode,
     ) -> OAuthToken:
-        raise NotImplementedError
+        self.authorization_codes.pop(authorization_code.code, None)
+        return self._build_oauth_token(
+            client_id=client.client_id or "",
+            scopes=authorization_code.scopes,
+            resource=authorization_code.resource,
+        )
 
     async def load_refresh_token(
         self,
         client: OAuthClientInformationFull,
         refresh_token: str,
     ) -> RefreshToken | None:
-        raise NotImplementedError
+        token = self.refresh_tokens.get(refresh_token)
+        if token is None or token.client_id != client.client_id:
+            return None
+        if token.expires_at is not None and token.expires_at < time.time():
+            self._revoke_token_pair(refresh_token_value=refresh_token)
+            return None
+        return token
 
     async def exchange_refresh_token(
         self,
@@ -202,10 +274,25 @@ class MCPOAuthProvider(
         refresh_token: RefreshToken,
         scopes: list[str],
     ) -> OAuthToken:
-        raise NotImplementedError
+        resource = self.refresh_token_resources.get(refresh_token.token)
+        self._revoke_token_pair(refresh_token_value=refresh_token.token)
+        return self._build_oauth_token(
+            client_id=client.client_id or "",
+            scopes=scopes,
+            resource=resource,
+        )
 
     async def load_access_token(self, token: str) -> AccessToken | None:
-        raise NotImplementedError
+        access_token = self.access_tokens.get(token)
+        if access_token is None:
+            return None
+        if access_token.expires_at is not None and access_token.expires_at < time.time():
+            self._revoke_token_pair(access_token_value=token)
+            return None
+        return access_token
 
     async def revoke_token(self, token: AccessToken | RefreshToken) -> None:
-        raise NotImplementedError
+        if isinstance(token, AccessToken):
+            self._revoke_token_pair(access_token_value=token.token)
+            return
+        self._revoke_token_pair(refresh_token_value=token.token)
