@@ -245,9 +245,73 @@ class EmailOps:
             uid_set = ",".join(email_ids)
             destination = _quote_mailbox(self.mailbox_ops.to_imap_path(destination_mailbox))
             result, lines = await imap.uid("move", uid_set, destination)
-            if result != "OK":
+            if result == "OK":
+                return [
+                    MovedEmail(message_id=email_id, success=True, error=None, method="native")
+                    for email_id in email_ids
+                ]
+            if result not in {"BAD", "NO"}:
                 raise RuntimeError(f"UID MOVE failed with IMAP result {result}: {lines!r}")
-            return [
-                MovedEmail(message_id=email_id, success=True, error=None, method="native")
-                for email_id in email_ids
-            ]
+
+            results: list[MovedEmail] = []
+            flagged_for_expunge: list[str] = []
+            for email_id in email_ids:
+                try:
+                    copy_result, copy_lines = await imap.uid("copy", email_id, destination)
+                    if copy_result != "OK":
+                        results.append(
+                            MovedEmail(
+                                message_id=email_id,
+                                success=False,
+                                error=f"UID COPY failed with IMAP result {copy_result}: {copy_lines!r}",
+                                method="fallback",
+                            )
+                        )
+                        continue
+
+                    store_result, store_lines = await imap.uid("store", email_id, "+FLAGS", r"(\Deleted)")
+                    if store_result != "OK":
+                        results.append(
+                            MovedEmail(
+                                message_id=email_id,
+                                success=False,
+                                error=f"UID STORE +FLAGS (\\Deleted) failed with IMAP result {store_result}: {store_lines!r}",
+                                method="fallback",
+                            )
+                        )
+                        continue
+
+                    flagged_for_expunge.append(email_id)
+                    results.append(MovedEmail(message_id=email_id, success=True, error=None, method="fallback"))
+                except Exception as e:
+                    results.append(
+                        MovedEmail(
+                            message_id=email_id,
+                            success=False,
+                            error=str(e),
+                            method="fallback",
+                        )
+                    )
+
+            if flagged_for_expunge:
+                expunge_result, _expunge_lines = await imap.expunge()
+                if expunge_result != "OK":
+                    expunge_error = (
+                        "COPY succeeded and source was flagged \\Deleted, but EXPUNGE failed; no rollback performed."
+                    )
+                    adjusted_results: list[MovedEmail] = []
+                    for item in results:
+                        if item.message_id in flagged_for_expunge and item.success:
+                            adjusted_results.append(
+                                MovedEmail(
+                                    message_id=item.message_id,
+                                    success=False,
+                                    error=expunge_error,
+                                    method="fallback",
+                                )
+                            )
+                        else:
+                            adjusted_results.append(item)
+                    return adjusted_results
+
+            return results
