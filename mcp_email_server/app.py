@@ -64,6 +64,14 @@ async def list_emails_metadata(
         Field(default=None, description="Retrieve emails since this datetime (UTC)."),
     ] = None,
     subject: Annotated[str | None, Field(default=None, description="Filter emails by subject.")] = None,
+    body_contains: Annotated[
+        str | None,
+        Field(default=None, description="Filter emails by body content using IMAP BODY search."),
+    ] = None,
+    text: Annotated[
+        str | None,
+        Field(default=None, description="Filter emails by full-text content using IMAP TEXT search."),
+    ] = None,
     from_address: Annotated[str | None, Field(default=None, description="Filter emails by sender address.")] = None,
     to_address: Annotated[
         str | None,
@@ -95,6 +103,8 @@ async def list_emails_metadata(
         before=before,
         since=since,
         subject=subject,
+        body_contains=body_contains,
+        text=text,
         from_address=from_address,
         to_address=to_address,
         order=order,

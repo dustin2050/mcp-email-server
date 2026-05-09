@@ -178,6 +178,8 @@ class TestMcpTools:
                 before=now,
                 since=None,
                 subject="Test",
+                body_contains=None,
+                text=None,
                 from_address="sender@example.com",
                 to_address=None,
                 order="desc",
@@ -226,6 +228,8 @@ class TestMcpTools:
                 before=None,
                 since=None,
                 subject=None,
+                body_contains=None,
+                text=None,
                 from_address=None,
                 to_address=None,
                 order="desc",
@@ -234,6 +238,45 @@ class TestMcpTools:
                 flagged=None,
                 answered=None,
             )
+
+    @pytest.mark.asyncio
+    async def test_list_emails_metadata_with_body_and_text_filters(self):
+        email_metadata_page = EmailMetadataPageResponse(
+            page=1,
+            page_size=10,
+            before=None,
+            since=None,
+            subject=None,
+            emails=[],
+            total=0,
+        )
+
+        mock_handler = AsyncMock()
+        mock_handler.get_emails_metadata.return_value = email_metadata_page
+
+        with patch("mcp_email_server.app.dispatch_handler", return_value=mock_handler):
+            await list_emails_metadata(
+                account_name="test_account",
+                body_contains="invoice",
+                text="follow up",
+            )
+
+        mock_handler.get_emails_metadata.assert_called_once_with(
+            page=1,
+            page_size=10,
+            before=None,
+            since=None,
+            subject=None,
+            body_contains="invoice",
+            text="follow up",
+            from_address=None,
+            to_address=None,
+            order="desc",
+            mailbox="INBOX",
+            seen=None,
+            flagged=None,
+            answered=None,
+        )
 
     @pytest.mark.asyncio
     async def test_get_emails_content_single(self):
