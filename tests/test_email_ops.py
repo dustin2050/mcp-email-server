@@ -5,7 +5,7 @@ import pytest
 
 from mcp_email_server.config import EmailServer
 from mcp_email_server.emails.mailbox import EmailOps, MailboxOps
-from mcp_email_server.emails.models import CopiedEmail
+from mcp_email_server.emails.models import CopiedEmail, MarkedEmail
 
 
 @pytest.fixture
@@ -149,3 +149,35 @@ class TestEmailOpsCopy:
             CopiedEmail(message_id="102", success=False, error="UID COPY failed with IMAP result NO: [b'copy 102 failed']"),
         ]
         mock_imap.expunge.assert_not_called()
+
+
+class TestEmailOpsMark:
+    @pytest.mark.asyncio
+    async def test_mark_emails_rejects_all_none(self, email_server):
+        mailbox_ops = MailboxOps(email_server)
+        email_ops = EmailOps(email_server, mailbox_ops)
+        with pytest.raises(ValueError, match="At least one of seen, flagged, or answered must be set"):
+            await email_ops.mark_emails(["101"], mailbox="INBOX")
+
+    @pytest.mark.asyncio
+    async def test_mark_emails_sends_add_and_remove_store_commands(self, email_server):
+        mailbox_ops = MailboxOps(email_server)
+        mailbox_ops._delimiter = "."
+        email_ops = EmailOps(email_server, mailbox_ops)
+        mock_imap = AsyncMock()
+        mock_imap.select = AsyncMock(return_value=("OK", [b"selected"]))
+        mock_imap.uid = AsyncMock(
+            side_effect=[
+                ("OK", [b"add flags"]),
+                ("OK", [b"remove flags"]),
+            ]
+        )
+
+        with patch.object(email_ops, "_login_logout") as mock_login_logout:
+            mock_login_logout.return_value.__aenter__.return_value = mock_imap
+            mock_login_logout.return_value.__aexit__.return_value = None
+            marked = await email_ops.mark_emails(["101"], mailbox="INBOX", seen=True, flagged=False, answered=True)
+
+        assert marked == [MarkedEmail(message_id="101", success=True, error=None)]
+        assert mock_imap.uid.await_args_list[0].args == ("store", "101", "+FLAGS", r"(\Seen \Answered)")
+        assert mock_imap.uid.await_args_list[1].args == ("store", "101", "-FLAGS", r"(\Flagged)")

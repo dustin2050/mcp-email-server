@@ -7,7 +7,7 @@ import aioimaplib
 
 from mcp_email_server.config import EmailServer
 from mcp_email_server.emails._helpers import _create_ssl_context, _quote_mailbox, _send_imap_id
-from mcp_email_server.emails.models import CopiedEmail, MailboxInfo, MailboxStatusResponse, MovedEmail
+from mcp_email_server.emails.models import CopiedEmail, MailboxInfo, MailboxStatusResponse, MarkedEmail, MovedEmail
 from mcp_email_server.log import logger
 
 LIST_LINE_RE = re.compile(rb'^\((?P<flags>[^)]*)\)\s+(?P<delimiter>NIL|"[^"]*")\s+(?P<name>.+)$')
@@ -342,4 +342,58 @@ class EmailOps:
                         )
                 except Exception as e:
                     results.append(CopiedEmail(message_id=email_id, success=False, error=str(e)))
+            return results
+
+    async def mark_emails(
+        self,
+        email_ids: list[str],
+        mailbox: str = "INBOX",
+        seen: bool | None = None,
+        flagged: bool | None = None,
+        answered: bool | None = None,
+    ) -> list[MarkedEmail]:
+        add_flags: list[str] = []
+        remove_flags: list[str] = []
+
+        flag_updates = [
+            (seen, r"\Seen"),
+            (flagged, r"\Flagged"),
+            (answered, r"\Answered"),
+        ]
+        for value, flag in flag_updates:
+            if value is True:
+                add_flags.append(flag)
+            elif value is False:
+                remove_flags.append(flag)
+
+        if not add_flags and not remove_flags:
+            raise ValueError("At least one of seen, flagged, or answered must be set")
+
+        async with self._login_logout() as imap:
+            await self.mailbox_ops.ensure_delimiter(imap)
+            await imap.select(_quote_mailbox(self.mailbox_ops.to_imap_path(mailbox)))
+            results: list[MarkedEmail] = []
+            for email_id in email_ids:
+                try:
+                    if add_flags:
+                        add_result, add_lines = await imap.uid(
+                            "store",
+                            email_id,
+                            "+FLAGS",
+                            f"({' '.join(add_flags)})",
+                        )
+                        if add_result != "OK":
+                            raise RuntimeError(f"UID STORE +FLAGS failed with IMAP result {add_result}: {add_lines!r}")
+                    if remove_flags:
+                        remove_result, remove_lines = await imap.uid(
+                            "store",
+                            email_id,
+                            "-FLAGS",
+                            f"({' '.join(remove_flags)})",
+                        )
+                        if remove_result != "OK":
+                            raise RuntimeError(f"UID STORE -FLAGS failed with IMAP result {remove_result}: {remove_lines!r}")
+                    results.append(MarkedEmail(message_id=email_id, success=True, error=None))
+                except Exception as e:
+                    results.append(MarkedEmail(message_id=email_id, success=False, error=str(e)))
             return results
