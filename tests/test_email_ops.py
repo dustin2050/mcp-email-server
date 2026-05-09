@@ -1,11 +1,12 @@
 import asyncio
 from unittest.mock import AsyncMock, patch
 
+import aioimaplib
 import pytest
 
 from mcp_email_server.config import EmailServer
 from mcp_email_server.emails.mailbox import EmailOps, MailboxOps
-from mcp_email_server.emails.models import CopiedEmail, MarkedEmail
+from mcp_email_server.emails.models import CopiedEmail, MarkedEmail, MovedEmail
 
 
 @pytest.fixture
@@ -122,6 +123,104 @@ class TestEmailOpsMove:
         assert moved[0].success is False
         assert moved[0].method == "fallback"
         assert moved[0].error == "COPY succeeded and source was flagged \\Deleted, but EXPUNGE failed; no rollback performed."
+
+    @pytest.mark.asyncio
+    async def test_move_emails_fallback_continues_after_copy_no_for_first_uid(self, email_server):
+        mailbox_ops = MailboxOps(email_server)
+        mailbox_ops._delimiter = "."
+        email_ops = EmailOps(email_server, mailbox_ops)
+        mock_imap = AsyncMock()
+        mock_imap.select = AsyncMock(return_value=("OK", [b"selected"]))
+        mock_imap.uid = AsyncMock(
+            side_effect=[
+                ("NO", [b"move rejected"]),
+                ("NO", [b"copy 101 failed"]),
+                ("OK", [b"copy 102"]),
+                ("OK", [b"store 102"]),
+            ]
+        )
+        mock_imap.expunge = AsyncMock(return_value=("OK", [b"expunge completed"]))
+
+        with patch.object(email_ops, "_login_logout") as mock_login_logout:
+            mock_login_logout.return_value.__aenter__.return_value = mock_imap
+            mock_login_logout.return_value.__aexit__.return_value = None
+            moved = await email_ops.move_emails(["101", "102"], "INBOX", "INBOX/Archive")
+
+        assert moved == [
+            MovedEmail(
+                message_id="101",
+                success=False,
+                error="UID COPY failed with IMAP result NO: [b'copy 101 failed']",
+                method="fallback",
+            ),
+            MovedEmail(message_id="102", success=True, error=None, method="fallback"),
+        ]
+        assert mock_imap.uid.await_args_list[1].args == ("copy", "101", '"INBOX.Archive"')
+        assert mock_imap.uid.await_args_list[2].args == ("copy", "102", '"INBOX.Archive"')
+        mock_imap.expunge.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_move_emails_fallback_store_no_does_not_attempt_rollback(self, email_server):
+        mailbox_ops = MailboxOps(email_server)
+        mailbox_ops._delimiter = "."
+        email_ops = EmailOps(email_server, mailbox_ops)
+        mock_imap = AsyncMock()
+        mock_imap.select = AsyncMock(return_value=("OK", [b"selected"]))
+        mock_imap.uid = AsyncMock(
+            side_effect=[
+                ("BAD", [b"move unsupported"]),
+                ("OK", [b"copy 101"]),
+                ("NO", [b"store 101 failed"]),
+            ]
+        )
+
+        with patch.object(email_ops, "_login_logout") as mock_login_logout:
+            mock_login_logout.return_value.__aenter__.return_value = mock_imap
+            mock_login_logout.return_value.__aexit__.return_value = None
+            moved = await email_ops.move_emails(["101"], "INBOX", "INBOX/Archive")
+
+        assert moved == [
+            MovedEmail(
+                message_id="101",
+                success=False,
+                error=r"UID STORE +FLAGS (\Deleted) failed with IMAP result NO: [b'store 101 failed']",
+                method="fallback",
+            )
+        ]
+        assert len(mock_imap.uid.await_args_list) == 3
+        assert mock_imap.uid.await_args_list[1].args == ("copy", "101", '"INBOX.Archive"')
+        assert mock_imap.uid.await_args_list[2].args == ("store", "101", "+FLAGS", r"(\Deleted)")
+        mock_imap.expunge.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_move_emails_fallback_records_raised_aioimaplib_exception(self, email_server):
+        mailbox_ops = MailboxOps(email_server)
+        mailbox_ops._delimiter = "."
+        email_ops = EmailOps(email_server, mailbox_ops)
+        mock_imap = AsyncMock()
+        mock_imap.select = AsyncMock(return_value=("OK", [b"selected"]))
+        mock_imap.uid = AsyncMock(
+            side_effect=[
+                ("NO", [b"move rejected"]),
+                aioimaplib.Abort("copy connection dropped"),
+                ("OK", [b"copy 102"]),
+                ("OK", [b"store 102"]),
+            ]
+        )
+        mock_imap.expunge = AsyncMock(return_value=("OK", [b"expunge completed"]))
+
+        with patch.object(email_ops, "_login_logout") as mock_login_logout:
+            mock_login_logout.return_value.__aenter__.return_value = mock_imap
+            mock_login_logout.return_value.__aexit__.return_value = None
+            moved = await email_ops.move_emails(["101", "102"], "INBOX", "INBOX/Archive")
+
+        assert moved == [
+            MovedEmail(message_id="101", success=False, error="copy connection dropped", method="fallback"),
+            MovedEmail(message_id="102", success=True, error=None, method="fallback"),
+        ]
+        assert mock_imap.uid.await_args_list[1].args == ("copy", "101", '"INBOX.Archive"')
+        assert mock_imap.uid.await_args_list[2].args == ("copy", "102", '"INBOX.Archive"')
+        mock_imap.expunge.assert_awaited_once()
 
 
 class TestEmailOpsCopy:
