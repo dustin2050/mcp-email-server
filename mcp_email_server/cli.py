@@ -3,8 +3,9 @@ import os
 import typer
 from mcp.server.transport_security import TransportSecuritySettings
 
-from mcp_email_server.app import mcp
+from mcp_email_server.app import configure_http_auth, mcp
 from mcp_email_server.config import delete_settings
+from mcp_email_server.log import logger
 
 app = typer.Typer()
 
@@ -111,6 +112,8 @@ def _configure_http_transport(host: str, port: int) -> None:
     mcp.settings.host = host
     mcp.settings.port = port
     mcp.settings.transport_security = _build_transport_security_settings(host, port)
+    if not configure_http_auth():
+        logger.warning("Running HTTP transport without OAuth authentication")
 
 
 @app.command()

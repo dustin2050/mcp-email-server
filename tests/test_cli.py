@@ -1,4 +1,5 @@
 import pytest
+from unittest.mock import patch
 
 from mcp_email_server.app import mcp
 from mcp_email_server.cli import (
@@ -9,6 +10,26 @@ from mcp_email_server.cli import (
     _expand_allowed_origins,
     _split_csv,
 )
+
+
+@pytest.fixture
+def restore_mcp_http_state():
+    original_host = mcp.settings.host
+    original_port = mcp.settings.port
+    original_transport_security = mcp.settings.transport_security
+    original_auth = mcp.settings.auth
+    original_provider = mcp._auth_server_provider
+    original_token_verifier = mcp._token_verifier
+
+    try:
+        yield
+    finally:
+        mcp.settings.host = original_host
+        mcp.settings.port = original_port
+        mcp.settings.transport_security = original_transport_security
+        mcp.settings.auth = original_auth
+        mcp._auth_server_provider = original_provider
+        mcp._token_verifier = original_token_verifier
 
 
 def test_split_csv_trims_empty_items():
@@ -111,22 +132,47 @@ def test_transport_security_defaults_include_named_host(monkeypatch):
     assert "http://mcp-email-server:*" in settings.allowed_origins
 
 
-def test_configure_http_transport_updates_mcp_settings(monkeypatch):
+def test_configure_http_transport_updates_mcp_settings(monkeypatch, restore_mcp_http_state):
     monkeypatch.setenv("MCP_ALLOWED_HOSTS", "mcp-email-server:*")
     monkeypatch.setenv("MCP_ALLOWED_ORIGINS", "http://mcp-email-server:*")
+    monkeypatch.delenv("MCP_OAUTH_CLIENT_ID", raising=False)
+    monkeypatch.delenv("MCP_OAUTH_CLIENT_SECRET", raising=False)
+    monkeypatch.delenv("MCP_PUBLIC_URL", raising=False)
 
-    original_host = mcp.settings.host
-    original_port = mcp.settings.port
-    original_transport_security = mcp.settings.transport_security
+    _configure_http_transport(WILDCARD_IPV4_BIND_HOST, 9557)
 
-    try:
+    assert mcp.settings.host == WILDCARD_IPV4_BIND_HOST
+    assert mcp.settings.port == 9557
+    assert mcp.settings.transport_security.allowed_hosts == ["mcp-email-server:*"]
+    assert mcp.settings.transport_security.allowed_origins == ["http://mcp-email-server:*"]
+
+
+def test_configure_http_transport_wires_oauth_when_env_present(monkeypatch, restore_mcp_http_state):
+    monkeypatch.setenv("MCP_ALLOWED_HOSTS", "mcp-email-server:*")
+    monkeypatch.setenv("MCP_ALLOWED_ORIGINS", "http://mcp-email-server:*")
+    monkeypatch.setenv("MCP_OAUTH_CLIENT_ID", "claude-desktop")
+    monkeypatch.setenv("MCP_OAUTH_CLIENT_SECRET", "topsecret")
+    monkeypatch.setenv("MCP_PUBLIC_URL", "https://mail.example.com")
+    monkeypatch.setenv("MCP_OAUTH_REDIRECT_URIS", "http://127.0.0.1:43123/callback")
+
+    _configure_http_transport(WILDCARD_IPV4_BIND_HOST, 9557)
+
+    assert mcp.settings.auth is not None
+    assert str(mcp.settings.auth.issuer_url) == "https://mail.example.com/"
+    assert str(mcp.settings.auth.resource_server_url) == "https://mail.example.com/mcp"
+    assert mcp.settings.auth.required_scopes == ["mcp"]
+    assert mcp._auth_server_provider is not None
+    assert mcp._token_verifier is not None
+
+
+def test_configure_http_transport_warns_when_oauth_env_absent(monkeypatch, restore_mcp_http_state):
+    monkeypatch.delenv("MCP_OAUTH_CLIENT_ID", raising=False)
+    monkeypatch.delenv("MCP_OAUTH_CLIENT_SECRET", raising=False)
+    monkeypatch.delenv("MCP_PUBLIC_URL", raising=False)
+    monkeypatch.delenv("MCP_OAUTH_REDIRECT_URIS", raising=False)
+
+    with patch("mcp_email_server.cli.logger.warning") as mock_warning:
         _configure_http_transport(WILDCARD_IPV4_BIND_HOST, 9557)
 
-        assert mcp.settings.host == WILDCARD_IPV4_BIND_HOST
-        assert mcp.settings.port == 9557
-        assert mcp.settings.transport_security.allowed_hosts == ["mcp-email-server:*"]
-        assert mcp.settings.transport_security.allowed_origins == ["http://mcp-email-server:*"]
-    finally:
-        mcp.settings.host = original_host
-        mcp.settings.port = original_port
-        mcp.settings.transport_security = original_transport_security
+    mock_warning.assert_called_once_with("Running HTTP transport without OAuth authentication")
+    assert mcp.settings.auth is None

@@ -15,9 +15,11 @@ from mcp.server.auth.provider import (
     AuthorizationParams,
     AuthorizeError,
     OAuthAuthorizationServerProvider,
+    ProviderTokenVerifier,
     RefreshToken,
     construct_redirect_uri,
 )
+from mcp.server.auth.settings import AuthSettings, ClientRegistrationOptions, RevocationOptions
 from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
 
 OAUTH_SCOPE = "mcp"
@@ -103,6 +105,36 @@ def build_oauth_runtime_config_from_env(env: dict[str, str] | None = None) -> OA
         redirect_uris=redirect_uris,
         allow_loopback_redirects=allow_loopback_redirects,
     )
+
+
+def build_auth_settings(config: OAuthRuntimeConfig, streamable_http_path: str = "/mcp") -> AuthSettings:
+    public_url = str(config.public_url).rstrip("/")
+    return AuthSettings(
+        issuer_url=TypeAdapter(AnyHttpUrl).validate_python(public_url),
+        resource_server_url=TypeAdapter(AnyHttpUrl).validate_python(f"{public_url}{streamable_http_path}"),
+        client_registration_options=ClientRegistrationOptions(
+            enabled=False,
+            valid_scopes=[OAUTH_SCOPE],
+            default_scopes=[OAUTH_SCOPE],
+        ),
+        revocation_options=RevocationOptions(enabled=True),
+        required_scopes=[OAUTH_SCOPE],
+    )
+
+
+def configure_fastmcp_oauth(server: Any, env: dict[str, str] | None = None) -> bool:
+    config = build_oauth_runtime_config_from_env(env)
+    if config is None:
+        server.settings.auth = None
+        server._auth_server_provider = None
+        server._token_verifier = None
+        return False
+
+    provider = MCPOAuthProvider(config)
+    server.settings.auth = build_auth_settings(config, server.settings.streamable_http_path)
+    server._auth_server_provider = provider
+    server._token_verifier = ProviderTokenVerifier(provider)
+    return True
 
 
 class MCPOAuthProvider(

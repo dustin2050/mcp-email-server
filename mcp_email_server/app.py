@@ -3,6 +3,7 @@ from typing import Annotated, Literal
 
 from mcp.server.fastmcp import FastMCP
 from pydantic import Field
+from starlette.responses import JSONResponse
 
 from mcp_email_server.config import (
     AccountAttributes,
@@ -21,8 +22,18 @@ from mcp_email_server.emails.models import (
     MarkedEmail,
     MovedEmail,
 )
+from mcp_email_server.oauth import configure_fastmcp_oauth
 
 mcp = FastMCP("email")
+
+
+def configure_http_auth() -> bool:
+    return configure_fastmcp_oauth(mcp)
+
+
+@mcp.custom_route("/healthz", methods=["GET"])
+async def healthz(_request):
+    return JSONResponse({"status": "ok"})
 
 
 @mcp.resource("email://{account_name}")
