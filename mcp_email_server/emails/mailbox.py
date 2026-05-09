@@ -7,10 +7,13 @@ import aioimaplib
 
 from mcp_email_server.config import EmailServer
 from mcp_email_server.emails._helpers import _create_ssl_context, _quote_mailbox, _send_imap_id
-from mcp_email_server.emails.models import MailboxInfo
+from mcp_email_server.emails.models import MailboxInfo, MailboxStatusResponse
 from mcp_email_server.log import logger
 
 LIST_LINE_RE = re.compile(rb'^\((?P<flags>[^)]*)\)\s+(?P<delimiter>NIL|"[^"]*")\s+(?P<name>.+)$')
+STATUS_LINE_RE = re.compile(rb'^\* STATUS (?P<mailbox>"(?:[^"\\]|\\.)*"|[^ ]+) \((?P<items>[^)]*)\)$')
+FLAGS_LINE_RE = re.compile(rb'^\* FLAGS \((?P<flags>[^)]*)\)$')
+PERMANENT_FLAGS_LINE_RE = re.compile(rb'^\* OK \[PERMANENTFLAGS \((?P<flags>[^)]*)\)\]')
 
 
 class MailboxOps:
@@ -145,3 +148,56 @@ class MailboxOps:
             await self.ensure_delimiter(imap)
             await imap.delete(_quote_mailbox(self.to_imap_path(mailbox)))
             return f"Successfully deleted mailbox '{mailbox}'"
+
+    async def get_mailbox_status(self, mailbox: str = "INBOX") -> MailboxStatusResponse:
+        async with self._login_logout() as imap:
+            await self.ensure_delimiter(imap)
+            quoted_mailbox = _quote_mailbox(self.to_imap_path(mailbox))
+
+            _, examine_lines = await imap.examine(quoted_mailbox)
+            _, status_lines = await imap.status(quoted_mailbox, "(MESSAGES RECENT UIDNEXT UIDVALIDITY UNSEEN)")
+
+            flags: list[str] = []
+            permanent_flags: list[str] = []
+            for line in examine_lines:
+                if not isinstance(line, bytes):
+                    continue
+                flags_match = FLAGS_LINE_RE.search(line)
+                if flags_match:
+                    flags = [flag.decode("utf-8") for flag in flags_match.group("flags").split()]
+                permanent_flags_match = PERMANENT_FLAGS_LINE_RE.search(line)
+                if permanent_flags_match:
+                    permanent_flags = [
+                        flag.decode("utf-8")
+                        for flag in permanent_flags_match.group("flags").split()
+                    ]
+
+            counts: dict[str, int] = {}
+            for line in status_lines:
+                if not isinstance(line, bytes):
+                    continue
+                status_match = STATUS_LINE_RE.search(line)
+                if not status_match:
+                    continue
+                items = status_match.group("items").decode("utf-8").split()
+                if len(items) % 2 != 0:
+                    raise RuntimeError(f"Could not parse STATUS response line: {line!r}")
+                counts = {
+                    items[index].lower(): int(items[index + 1])
+                    for index in range(0, len(items), 2)
+                }
+                break
+
+            if not counts:
+                raise RuntimeError(f"Could not parse STATUS response lines: {status_lines!r}")
+
+            return MailboxStatusResponse(
+                path=mailbox,
+                messages=counts["messages"],
+                recent=counts["recent"],
+                unseen=counts.get("unseen"),
+                uid_next=counts.get("uidnext"),
+                uid_validity=counts.get("uidvalidity"),
+                flags=flags,
+                permanent_flags=permanent_flags,
+            )

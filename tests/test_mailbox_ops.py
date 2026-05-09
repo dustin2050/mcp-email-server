@@ -196,3 +196,42 @@ class TestMailboxMutation:
 
         assert result == "Successfully deleted mailbox 'INBOX/Archive'"
         mock_imap.delete.assert_awaited_once_with('"INBOX.Archive"')
+
+
+class TestMailboxStatus:
+    @pytest.mark.asyncio
+    async def test_get_mailbox_status_parses_counts_and_flags(self, email_server):
+        ops = MailboxOps(email_server)
+        ops._delimiter = "."
+        mock_imap = AsyncMock()
+        mock_imap.examine = AsyncMock(
+            return_value=(
+                "OK",
+                [
+                    b"* FLAGS (\\Seen \\Answered \\Flagged)",
+                    b"* OK [PERMANENTFLAGS (\\Seen \\Answered \\Flagged \\*)] Flags permitted.",
+                ],
+            )
+        )
+        mock_imap.status = AsyncMock(
+            return_value=(
+                "OK",
+                [b'* STATUS "INBOX.Archive" (MESSAGES 12 RECENT 1 UIDNEXT 45 UIDVALIDITY 99 UNSEEN 3)'],
+            )
+        )
+
+        with patch.object(ops, "_login_logout") as mock_login_logout:
+            mock_login_logout.return_value.__aenter__.return_value = mock_imap
+            mock_login_logout.return_value.__aexit__.return_value = None
+            status = await ops.get_mailbox_status("INBOX/Archive")
+
+        assert status.path == "INBOX/Archive"
+        assert status.messages == 12
+        assert status.recent == 1
+        assert status.unseen == 3
+        assert status.uid_next == 45
+        assert status.uid_validity == 99
+        assert status.flags == [r"\Seen", r"\Answered", r"\Flagged"]
+        assert status.permanent_flags == [r"\Seen", r"\Answered", r"\Flagged", r"\*"]
+        mock_imap.examine.assert_awaited_once_with('"INBOX.Archive"')
+        mock_imap.status.assert_awaited_once_with('"INBOX.Archive"', "(MESSAGES RECENT UIDNEXT UIDVALIDITY UNSEEN)")
