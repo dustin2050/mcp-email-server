@@ -201,3 +201,34 @@ class MailboxOps:
                 flags=flags,
                 permanent_flags=permanent_flags,
             )
+
+
+class EmailOps:
+    def __init__(self, email_server: EmailServer, mailbox_ops: MailboxOps):
+        self.email_server = email_server
+        self.mailbox_ops = mailbox_ops
+        self.imap_class = aioimaplib.IMAP4_SSL if email_server.use_ssl else aioimaplib.IMAP4
+
+    def _imap_connect(self) -> aioimaplib.IMAP4_SSL | aioimaplib.IMAP4:
+        if self.email_server.use_ssl:
+            return self.imap_class(
+                self.email_server.host,
+                self.email_server.port,
+                ssl_context=_create_ssl_context(self.email_server.verify_ssl),
+            )
+        return self.imap_class(self.email_server.host, self.email_server.port)
+
+    @asynccontextmanager
+    async def _login_logout(self):
+        imap = self._imap_connect()
+        try:
+            await imap._client_task
+            await imap.wait_hello_from_server()
+            await imap.login(self.email_server.user_name, self.email_server.password.get_secret_value())
+            await _send_imap_id(imap)
+            yield imap
+        finally:
+            try:
+                await imap.logout()
+            except Exception as e:
+                logger.info(f"Error during logout: {e}")
