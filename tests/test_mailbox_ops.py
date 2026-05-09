@@ -175,3 +175,24 @@ class TestMailboxMutation:
 
         assert result == "Successfully renamed mailbox 'INBOX/Projects/2025' to 'INBOX/Projects/2026'"
         mock_imap.rename.assert_awaited_once_with('"INBOX.Projects.2025"', '"INBOX.Projects.2026"')
+
+    @pytest.mark.asyncio
+    async def test_delete_mailbox_requires_confirm(self, email_server):
+        ops = MailboxOps(email_server)
+        with pytest.raises(ValueError, match="Re-run with confirm=True"):
+            await ops.delete_mailbox("INBOX/Archive")
+
+    @pytest.mark.asyncio
+    async def test_delete_mailbox_translates_and_quotes_when_confirmed(self, email_server):
+        ops = MailboxOps(email_server)
+        ops._delimiter = "."
+        mock_imap = AsyncMock()
+        mock_imap.delete = AsyncMock(return_value=("OK", [b"delete completed"]))
+
+        with patch.object(ops, "_login_logout") as mock_login_logout:
+            mock_login_logout.return_value.__aenter__.return_value = mock_imap
+            mock_login_logout.return_value.__aexit__.return_value = None
+            result = await ops.delete_mailbox("INBOX/Archive", confirm=True)
+
+        assert result == "Successfully deleted mailbox 'INBOX/Archive'"
+        mock_imap.delete.assert_awaited_once_with('"INBOX.Archive"')

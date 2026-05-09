@@ -137,3 +137,11 @@ class MailboxOps:
                 _quote_mailbox(self.to_imap_path(new_mailbox)),
             )
             return f"Successfully renamed mailbox '{old_mailbox}' to '{new_mailbox}'"
+
+    async def delete_mailbox(self, mailbox: str, confirm: bool = False) -> str:
+        if not confirm:
+            raise ValueError(f"Refusing to delete mailbox '{mailbox}'. Re-run with confirm=True.")
+        async with self._login_logout() as imap:
+            await self.ensure_delimiter(imap)
+            await imap.delete(_quote_mailbox(self.to_imap_path(mailbox)))
+            return f"Successfully deleted mailbox '{mailbox}'"
