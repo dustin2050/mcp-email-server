@@ -128,3 +128,12 @@ class MailboxOps:
             await self.ensure_delimiter(imap)
             await imap.create(_quote_mailbox(self.to_imap_path(mailbox)))
             return f"Successfully created mailbox '{mailbox}'"
+
+    async def rename_mailbox(self, old_mailbox: str, new_mailbox: str) -> str:
+        async with self._login_logout() as imap:
+            await self.ensure_delimiter(imap)
+            await imap.rename(
+                _quote_mailbox(self.to_imap_path(old_mailbox)),
+                _quote_mailbox(self.to_imap_path(new_mailbox)),
+            )
+            return f"Successfully renamed mailbox '{old_mailbox}' to '{new_mailbox}'"
