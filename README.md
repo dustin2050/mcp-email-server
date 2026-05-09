@@ -282,6 +282,25 @@ await send_email(
 
 The `in_reply_to` parameter sets the `In-Reply-To` header, and `references` sets the `References` header. Both are used by email clients to thread conversations properly.
 
+## MCP Tools
+
+| Tool | Description |
+| ---- | ----------- |
+| `list_available_accounts` | List all configured email accounts with masked credentials. |
+| `list_emails_metadata` | List email metadata without body content, now including `body_contains` and `text` full-text filters. |
+| `get_emails_content` | Get the full content of one or more emails by `email_id`. |
+| `send_email` | Send an email and optionally include reply-threading headers and attachments. |
+| `delete_emails` | Delete one or more emails by `email_id`. |
+| `download_attachment` | Download an attachment to a specified local path when attachment downloads are enabled. |
+| `list_mailboxes` | List mailboxes for an account using canonical `/` separators. |
+| `create_mailbox` | Create a mailbox on the IMAP server. |
+| `rename_mailbox` | Rename an existing mailbox on the IMAP server. |
+| `delete_mailbox` | Delete a mailbox from the IMAP server; requires `confirm=True`. |
+| `get_mailbox_status` | Return message counts plus `FLAGS` and `PERMANENTFLAGS` for a mailbox. |
+| `move_emails` | Move emails to another mailbox and return per-message results. |
+| `copy_emails` | Copy emails to another mailbox and return per-message results. |
+| `mark_emails` | Set or clear `Seen`, `Flagged`, and `Answered` flags for emails. |
+
 ## Development
 
 This project is managed using [uv](https://github.com/ai-zerolab/uv).
