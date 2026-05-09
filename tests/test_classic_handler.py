@@ -109,12 +109,14 @@ class TestClassicEmailHandler:
 
                 # Verify the client methods were called correctly
                 classic_handler.incoming_client.get_emails_metadata_stream.assert_called_once_with(
-                    1, 10, now, None, "Test", "sender@example.com", None, "desc", "INBOX", None, None, None
+                    1, 10, now, None, "Test", None, None, "sender@example.com", None, "desc", "INBOX", None, None, None
                 )
                 mock_count.assert_called_once_with(
                     now,
                     None,
                     "Test",
+                    body_contains=None,
+                    text=None,
                     from_address="sender@example.com",
                     to_address=None,
                     mailbox="INBOX",
@@ -153,12 +155,14 @@ class TestClassicEmailHandler:
 
                 # Verify mailbox parameter was passed correctly
                 classic_handler.incoming_client.get_emails_metadata_stream.assert_called_once_with(
-                    1, 10, None, None, None, None, None, "desc", "Sent", None, None, None
+                    1, 10, None, None, None, None, None, None, None, "desc", "Sent", None, None, None
                 )
                 mock_count.assert_called_once_with(
                     None,
                     None,
                     None,
+                    body_contains=None,
+                    text=None,
                     from_address=None,
                     to_address=None,
                     mailbox="Sent",
@@ -166,6 +170,52 @@ class TestClassicEmailHandler:
                     flagged=None,
                     answered=None,
                 )
+
+    @pytest.mark.asyncio
+    async def test_get_emails_metadata_forwards_body_contains_and_text(self, classic_handler):
+        now = datetime.now(timezone.utc)
+        mock_stream = AsyncMock()
+        mock_stream.__aiter__.return_value = []
+        mock_count = AsyncMock(return_value=0)
+
+        with patch.object(
+            classic_handler.incoming_client, "get_emails_metadata_stream", return_value=mock_stream
+        ) as mock_get_stream:
+            with patch.object(classic_handler.incoming_client, "get_email_count", mock_count):
+                await classic_handler.get_emails_metadata(
+                    body_contains="invoice",
+                    text="follow up",
+                )
+
+        mock_get_stream.assert_called_once_with(
+            1,
+            10,
+            None,
+            None,
+            None,
+            "invoice",
+            "follow up",
+            None,
+            None,
+            "desc",
+            "INBOX",
+            None,
+            None,
+            None,
+        )
+        mock_count.assert_called_once_with(
+            None,
+            None,
+            None,
+            body_contains="invoice",
+            text="follow up",
+            from_address=None,
+            to_address=None,
+            mailbox="INBOX",
+            seen=None,
+            flagged=None,
+            answered=None,
+        )
 
     @pytest.mark.asyncio
     async def test_send_email(self, classic_handler):
