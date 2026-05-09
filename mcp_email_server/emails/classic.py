@@ -22,6 +22,7 @@ import aiosmtplib
 from mcp_email_server.emails._helpers import _create_ssl_context, _quote_mailbox, _send_imap_id
 from mcp_email_server.config import EmailServer, EmailSettings
 from mcp_email_server.emails import EmailHandler
+from mcp_email_server.emails.mailbox import EmailOps, MailboxOps
 from mcp_email_server.emails.models import (
     AttachmentDownloadResponse,
     CopiedEmail,
@@ -981,6 +982,8 @@ class ClassicEmailHandler(EmailHandler):
             email_settings.outgoing,
             sender=f"{email_settings.full_name} <{email_settings.email_address}>",
         )
+        self.mailbox_ops = MailboxOps(email_settings.incoming)
+        self.email_ops = EmailOps(email_settings.incoming, self.mailbox_ops)
         self.save_to_sent = email_settings.save_to_sent
         self.sent_folder_name = email_settings.sent_folder_name
 
@@ -1129,19 +1132,19 @@ class ClassicEmailHandler(EmailHandler):
         )
 
     async def list_mailboxes(self, pattern: str = "*", subscribed_only: bool = False) -> list[MailboxInfo]:
-        raise NotImplementedError("Task 15 wires MailboxOps into ClassicEmailHandler")
+        return await self.mailbox_ops.list_mailboxes(pattern, subscribed_only)
 
     async def create_mailbox(self, mailbox: str) -> str:
-        raise NotImplementedError("Task 15 wires MailboxOps into ClassicEmailHandler")
+        return await self.mailbox_ops.create_mailbox(mailbox)
 
     async def rename_mailbox(self, old_mailbox: str, new_mailbox: str) -> str:
-        raise NotImplementedError("Task 15 wires MailboxOps into ClassicEmailHandler")
+        return await self.mailbox_ops.rename_mailbox(old_mailbox, new_mailbox)
 
     async def delete_mailbox(self, mailbox: str, confirm: bool = False) -> str:
-        raise NotImplementedError("Task 15 wires MailboxOps into ClassicEmailHandler")
+        return await self.mailbox_ops.delete_mailbox(mailbox, confirm)
 
     async def get_mailbox_status(self, mailbox: str = "INBOX") -> MailboxStatusResponse:
-        raise NotImplementedError("Task 15 wires MailboxOps into ClassicEmailHandler")
+        return await self.mailbox_ops.get_mailbox_status(mailbox)
 
     async def move_emails(
         self,
@@ -1149,7 +1152,7 @@ class ClassicEmailHandler(EmailHandler):
         source_mailbox: str,
         destination_mailbox: str,
     ) -> list[MovedEmail]:
-        raise NotImplementedError("Task 15 wires EmailOps into ClassicEmailHandler")
+        return await self.email_ops.move_emails(email_ids, source_mailbox, destination_mailbox)
 
     async def copy_emails(
         self,
@@ -1157,7 +1160,7 @@ class ClassicEmailHandler(EmailHandler):
         source_mailbox: str,
         destination_mailbox: str,
     ) -> list[CopiedEmail]:
-        raise NotImplementedError("Task 15 wires EmailOps into ClassicEmailHandler")
+        return await self.email_ops.copy_emails(email_ids, source_mailbox, destination_mailbox)
 
     async def mark_emails(
         self,
@@ -1167,4 +1170,10 @@ class ClassicEmailHandler(EmailHandler):
         flagged: bool | None = None,
         answered: bool | None = None,
     ) -> list[MarkedEmail]:
-        raise NotImplementedError("Task 15 wires EmailOps into ClassicEmailHandler")
+        return await self.email_ops.mark_emails(
+            email_ids,
+            mailbox=mailbox,
+            seen=seen,
+            flagged=flagged,
+            answered=answered,
+        )

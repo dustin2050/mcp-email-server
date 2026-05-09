@@ -5,6 +5,7 @@ import pytest
 
 from mcp_email_server.config import EmailServer, EmailSettings
 from mcp_email_server.emails.classic import ClassicEmailHandler, EmailClient
+from mcp_email_server.emails.models import CopiedEmail, MailboxInfo, MailboxStatusResponse, MarkedEmail, MovedEmail
 from mcp_email_server.emails.models import (
     AttachmentDownloadResponse,
     EmailBodyResponse,
@@ -304,6 +305,53 @@ class TestClassicEmailHandler:
             assert result.saved_path == save_path
 
             mock_download.assert_called_once_with("123", "document.pdf", save_path, "INBOX")
+
+    @pytest.mark.asyncio
+    async def test_list_mailboxes_delegates_to_mailbox_ops(self, classic_handler):
+        mock_list = AsyncMock(return_value=[MailboxInfo(path="INBOX/Archive", delimiter=".", flags=[], subscribed=False)])
+        with patch.object(classic_handler.mailbox_ops, "list_mailboxes", mock_list):
+            result = await classic_handler.list_mailboxes(pattern="INBOX/*")
+        assert result[0].path == "INBOX/Archive"
+        mock_list.assert_awaited_once_with("INBOX/*", False)
+
+    @pytest.mark.asyncio
+    async def test_get_mailbox_status_delegates_to_mailbox_ops(self, classic_handler):
+        mock_status = AsyncMock(
+            return_value=MailboxStatusResponse(
+                path="INBOX",
+                messages=10,
+                recent=1,
+                unseen=2,
+                uid_next=11,
+                uid_validity=99,
+                flags=[r"\Seen"],
+                permanent_flags=[r"\Seen", r"\*"],
+            )
+        )
+        with patch.object(classic_handler.mailbox_ops, "get_mailbox_status", mock_status):
+            result = await classic_handler.get_mailbox_status("INBOX")
+        assert result.messages == 10
+        mock_status.assert_awaited_once_with("INBOX")
+
+    @pytest.mark.asyncio
+    async def test_move_copy_and_mark_delegate_to_email_ops(self, classic_handler):
+        mock_move = AsyncMock(return_value=[MovedEmail(message_id="1", success=True, error=None, method="native")])
+        mock_copy = AsyncMock(return_value=[CopiedEmail(message_id="1", success=True, error=None)])
+        mock_mark = AsyncMock(return_value=[MarkedEmail(message_id="1", success=True, error=None)])
+
+        with patch.object(classic_handler.email_ops, "move_emails", mock_move):
+            moved = await classic_handler.move_emails(["1"], "INBOX", "Archive")
+        with patch.object(classic_handler.email_ops, "copy_emails", mock_copy):
+            copied = await classic_handler.copy_emails(["1"], "INBOX", "Archive")
+        with patch.object(classic_handler.email_ops, "mark_emails", mock_mark):
+            marked = await classic_handler.mark_emails(["1"], mailbox="INBOX", seen=True)
+
+        assert moved[0].method == "native"
+        assert copied[0].success is True
+        assert marked[0].success is True
+        mock_move.assert_awaited_once_with(["1"], "INBOX", "Archive")
+        mock_copy.assert_awaited_once_with(["1"], "INBOX", "Archive")
+        mock_mark.assert_awaited_once_with(["1"], mailbox="INBOX", seen=True, flagged=None, answered=None)
 
     @pytest.mark.asyncio
     async def test_send_email_with_reply_headers(self, classic_handler):
