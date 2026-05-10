@@ -36,6 +36,70 @@ async def healthz(_request):
     return JSONResponse({"status": "ok"})
 
 
+@mcp.custom_route("/debug/egress", methods=["GET"])
+async def debug_egress(_request):
+    """Diagnostic endpoint: probes outbound TCP reachability from the container.
+    Tests multiple ports (SMTP variants + a known-good control) to distinguish
+    between SMTP-specific blocks and general egress failures. Public/unauth'd
+    so it can be invoked with a single curl. Remove after diagnosis.
+    """
+    import asyncio
+    import time
+
+    async def probe(host: str, port: int, timeout: float = 8.0) -> dict:
+        start = time.monotonic()
+        try:
+            reader, writer = await asyncio.wait_for(
+                asyncio.open_connection(host, port), timeout=timeout
+            )
+            elapsed_ms = int((time.monotonic() - start) * 1000)
+            banner_bytes = b""
+            try:
+                banner_bytes = await asyncio.wait_for(reader.read(200), timeout=2.0)
+            except asyncio.TimeoutError:
+                pass
+            writer.close()
+            try:
+                await writer.wait_closed()
+            except Exception:
+                pass
+            return {
+                "host": host,
+                "port": port,
+                "ok": True,
+                "elapsed_ms": elapsed_ms,
+                "banner": banner_bytes.decode("ascii", errors="replace").strip()[:160] or None,
+            }
+        except asyncio.TimeoutError:
+            return {
+                "host": host,
+                "port": port,
+                "ok": False,
+                "error": f"timeout after {timeout}s",
+                "elapsed_ms": int((time.monotonic() - start) * 1000),
+            }
+        except Exception as e:
+            return {
+                "host": host,
+                "port": port,
+                "ok": False,
+                "error": f"{type(e).__name__}: {e}",
+                "elapsed_ms": int((time.monotonic() - start) * 1000),
+            }
+
+    targets = [
+        ("smtp.gmx.net", 25),
+        ("smtp.gmx.net", 465),
+        ("smtp.gmx.net", 587),
+        ("smtp.gmx.net", 2525),
+        ("smtp.sendgrid.net", 587),
+        ("smtp.resend.com", 2587),
+        ("www.google.com", 443),  # control: confirms general HTTPS egress
+    ]
+    results = await asyncio.gather(*(probe(host, port) for host, port in targets))
+    return JSONResponse({"results": results})
+
+
 @mcp.resource("email://{account_name}")
 async def get_account(account_name: str) -> EmailSettings | ProviderSettings | None:
     settings = get_settings()
