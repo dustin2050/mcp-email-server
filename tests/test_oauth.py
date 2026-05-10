@@ -128,6 +128,43 @@ def test_build_oauth_runtime_config_uses_loopback_redirect_defaults(monkeypatch)
 
 
 @pytest.mark.asyncio
+async def test_authorize_accepts_claude_ai_callback_in_default_mode(monkeypatch):
+    """Regression: with no explicit MCP_OAUTH_REDIRECT_URIS set, the default
+    redirect-uri list contains both Claude.ai's https callback and the
+    loopback URIs. authorize() must accept a redirect to
+    https://claude.ai/api/mcp/auth_callback and return a code+state in the
+    redirect URL — not raise AuthorizeError. The bug being guarded against:
+    earlier the loopback-allow flag short-circuited and rejected anything
+    non-loopback even when the URI was on the explicit whitelist.
+    """
+    monkeypatch.setenv("MCP_OAUTH_CLIENT_ID", "claude-desktop")
+    monkeypatch.setenv("MCP_OAUTH_CLIENT_SECRET", "topsecret")
+    monkeypatch.setenv("MCP_PUBLIC_URL", "https://mail.example.com")
+    monkeypatch.delenv("MCP_OAUTH_REDIRECT_URIS", raising=False)
+
+    provider = MCPOAuthProvider(build_oauth_runtime_config_from_env())
+    client = await provider.get_client("claude-desktop")
+
+    redirect_url = await provider.authorize(
+        client,
+        AuthorizationParams(
+            state="opaque-state",
+            scopes=["mcp"],
+            code_challenge="x" * 43,
+            redirect_uri="https://claude.ai/api/mcp/auth_callback",
+            redirect_uri_provided_explicitly=True,
+        ),
+    )
+
+    parsed = urlparse(redirect_url)
+    query = parse_qs(parsed.query)
+
+    assert f"{parsed.scheme}://{parsed.netloc}{parsed.path}" == "https://claude.ai/api/mcp/auth_callback"
+    assert query["state"] == ["opaque-state"]
+    assert len(query["code"][0]) >= 32
+
+
+@pytest.mark.asyncio
 async def test_authorize_returns_redirect_with_code_and_state(monkeypatch):
     monkeypatch.setenv("MCP_OAUTH_CLIENT_ID", "claude-desktop")
     monkeypatch.setenv("MCP_OAUTH_CLIENT_SECRET", "topsecret")

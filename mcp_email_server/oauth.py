@@ -213,9 +213,11 @@ class MCPOAuthProvider(
         )
 
     def _is_redirect_uri_allowed(self, redirect_uri: AnyUrl) -> bool:
-        if self.config.allow_loopback_redirects:
-            return _is_loopback_redirect_uri(redirect_uri)
-        return _normalize_url(redirect_uri) in {_normalize_url(item) for item in self.config.redirect_uris}
+        if _normalize_url(redirect_uri) in {_normalize_url(item) for item in self.config.redirect_uris}:
+            return True
+        if self.config.allow_loopback_redirects and _is_loopback_redirect_uri(redirect_uri):
+            return True
+        return False
 
     def _build_oauth_token(
         self,
