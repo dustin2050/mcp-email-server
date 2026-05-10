@@ -66,6 +66,39 @@ def test_build_oauth_runtime_config_prefers_explicit_redirect_uris(monkeypatch):
     ]
 
 
+def test_build_oauth_runtime_config_strips_wrapping_quotes_from_env_vars(monkeypatch):
+    """Railway dashboard etc. often inject straight or smart quotes around
+    pasted values. The config builder must strip them defensively, otherwise
+    pydantic's URL parser rejects the value with a confusing 'relative URL
+    without a base' error and the container crashes on startup.
+    """
+    monkeypatch.setenv("MCP_OAUTH_CLIENT_ID", '"claude-desktop”')
+    monkeypatch.setenv("MCP_OAUTH_CLIENT_SECRET", '"S)demCg6ejwV=?:}ZA6jQFG<-y,{Zt{w”')
+    monkeypatch.setenv("MCP_PUBLIC_URL", '"mcp-email-server-production-4861.up.railway.app”')
+    monkeypatch.delenv("MCP_OAUTH_REDIRECT_URIS", raising=False)
+
+    config = build_oauth_runtime_config_from_env()
+
+    assert config is not None
+    assert config.client_id == "claude-desktop"
+    assert config.client_secret == "S)demCg6ejwV=?:}ZA6jQFG<-y,{Zt{w"
+    assert str(config.public_url).rstrip("/") == "https://mcp-email-server-production-4861.up.railway.app"
+
+
+def test_build_oauth_runtime_config_auto_prepends_https_when_scheme_missing(monkeypatch):
+    """Users routinely paste the Railway URL without 'https://'; the public
+    URL must be valid even when only the host is provided."""
+    monkeypatch.setenv("MCP_OAUTH_CLIENT_ID", "claude-desktop")
+    monkeypatch.setenv("MCP_OAUTH_CLIENT_SECRET", "topsecret")
+    monkeypatch.setenv("MCP_PUBLIC_URL", "service.up.railway.app")
+    monkeypatch.delenv("MCP_OAUTH_REDIRECT_URIS", raising=False)
+
+    config = build_oauth_runtime_config_from_env()
+
+    assert config is not None
+    assert str(config.public_url).rstrip("/") == "https://service.up.railway.app"
+
+
 def test_build_oauth_runtime_config_uses_loopback_redirect_defaults(monkeypatch):
     monkeypatch.setenv("MCP_OAUTH_CLIENT_ID", "claude-desktop")
     monkeypatch.setenv("MCP_OAUTH_CLIENT_SECRET", "topsecret")

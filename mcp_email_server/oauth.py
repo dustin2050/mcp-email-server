@@ -52,10 +52,50 @@ class StaticOAuthClientInformation(OAuthClientInformationFull):
         return super().validate_redirect_uri(redirect_uri)
 
 
+# Quote characters that copy-paste from Railway / iOS / Word commonly inject
+# at the start or end of env-var values: ASCII " and ', plus the typographic
+# doubles (U+2018-U+201F) and the French «» guillemets. Pairs may be mixed
+# (e.g. ASCII " on one side, smart " on the other) when only one side passed
+# through autocorrect.
+_WRAPPING_QUOTE_CHARS = frozenset('"\'‘’‚‛“”„‟«»')
+
+
+def _clean_env_value(value: str | None) -> str | None:
+    """Trim whitespace and strip up to one wrapping quote char from each end.
+
+    Railway, iOS, Word, and many other input UIs silently inject straight or
+    typographic quote characters around env-var values. Pydantic URL parsers
+    then reject the resulting strings with a confusing 'relative URL without
+    a base' error and the container crashes on startup. Strip them defensively
+    before parsing — independently per side, since autocorrect often only
+    rewrites one side.
+    """
+    if value is None:
+        return None
+    cleaned = value.strip()
+    if len(cleaned) >= 2 and cleaned[0] in _WRAPPING_QUOTE_CHARS and cleaned[-1] in _WRAPPING_QUOTE_CHARS:
+        cleaned = cleaned[1:-1].strip()
+    return cleaned
+
+
+def _ensure_url_scheme(value: str) -> str:
+    """Prepend https:// to a URL-ish value that has no scheme.
+
+    Railway shows the public URL as 'service-xyz.up.railway.app' without a
+    scheme; users routinely paste it as-is. Pydantic AnyHttpUrl requires a
+    scheme. Prepend https:// when the value has neither '://' nor a leading '/'.
+    """
+    if "://" in value:
+        return value
+    if value.startswith("/"):
+        return value
+    return f"https://{value}"
+
+
 def _split_csv(value: str | None) -> list[str]:
     if not value:
         return []
-    return [item.strip() for item in value.split(",") if item.strip()]
+    return [_clean_env_value(item) or "" for item in value.split(",") if item.strip()]
 
 
 def _is_loopback_redirect_uri(redirect_uri: AnyUrl) -> bool:
@@ -74,9 +114,11 @@ def _normalize_url(url: AnyUrl) -> str:
 
 def build_oauth_runtime_config_from_env(env: dict[str, str] | None = None) -> OAuthRuntimeConfig | None:
     environ = env or os.environ
-    client_id = environ.get("MCP_OAUTH_CLIENT_ID")
-    client_secret = environ.get("MCP_OAUTH_CLIENT_SECRET")
-    public_url = environ.get("MCP_PUBLIC_URL")
+    client_id = _clean_env_value(environ.get("MCP_OAUTH_CLIENT_ID"))
+    client_secret = _clean_env_value(environ.get("MCP_OAUTH_CLIENT_SECRET"))
+    public_url = _clean_env_value(environ.get("MCP_PUBLIC_URL"))
+    if public_url:
+        public_url = _ensure_url_scheme(public_url)
 
     if not client_id and not client_secret and not public_url:
         return None
