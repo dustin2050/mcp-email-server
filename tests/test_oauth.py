@@ -66,6 +66,22 @@ def test_build_oauth_runtime_config_prefers_explicit_redirect_uris(monkeypatch):
     ]
 
 
+def test_build_oauth_runtime_config_accepts_claude_ai_callback_by_default(monkeypatch):
+    """Claude.ai (web) and Claude Desktop's remote-MCP integration callback to
+    https://claude.ai/api/mcp/auth_callback. It must be on the default
+    redirect-uri whitelist so the OAuth flow works without extra config.
+    """
+    monkeypatch.setenv("MCP_OAUTH_CLIENT_ID", "claude-desktop")
+    monkeypatch.setenv("MCP_OAUTH_CLIENT_SECRET", "topsecret")
+    monkeypatch.setenv("MCP_PUBLIC_URL", "https://mail.example.com")
+    monkeypatch.delenv("MCP_OAUTH_REDIRECT_URIS", raising=False)
+
+    config = build_oauth_runtime_config_from_env()
+
+    assert config is not None
+    assert "https://claude.ai/api/mcp/auth_callback" in [str(uri).rstrip("/") for uri in config.redirect_uris]
+
+
 def test_build_oauth_runtime_config_strips_wrapping_quotes_from_env_vars(monkeypatch):
     """Railway dashboard etc. often inject straight or smart quotes around
     pasted values. The config builder must strip them defensively, otherwise

@@ -22,11 +22,18 @@ from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
 from pydantic import AnyHttpUrl, AnyUrl, Field, TypeAdapter
 
 OAUTH_SCOPE = "mcp"
-DEFAULT_LOOPBACK_REDIRECT_URIS = [
+# Well-known MCP-client OAuth callbacks. Anthropic publishes the Claude.ai
+# callback at this stable URL; Claude Desktop's remote-MCP integration uses it
+# too. Loopback variants are also included so locally-running clients work
+# out of the box.
+DEFAULT_REDIRECT_URIS = [
+    "https://claude.ai/api/mcp/auth_callback",
     "http://127.0.0.1/callback",
     "http://localhost/callback",
     "http://[::1]/callback",
 ]
+# Backwards-compatible alias for code/tests that imported the old name.
+DEFAULT_LOOPBACK_REDIRECT_URIS = DEFAULT_REDIRECT_URIS
 
 ACCESS_TOKEN_TTL_SECONDS = 60 * 60
 REFRESH_TOKEN_TTL_SECONDS = 30 * 24 * 60 * 60
@@ -105,7 +112,7 @@ def _is_loopback_redirect_uri(redirect_uri: AnyUrl) -> bool:
 def _parse_redirect_uris(value: str | None) -> tuple[list[AnyUrl], bool]:
     if value:
         return TypeAdapter(list[AnyUrl]).validate_python(_split_csv(value)), False
-    return TypeAdapter(list[AnyUrl]).validate_python(DEFAULT_LOOPBACK_REDIRECT_URIS), True
+    return TypeAdapter(list[AnyUrl]).validate_python(DEFAULT_REDIRECT_URIS), True
 
 
 def _normalize_url(url: AnyUrl) -> str:
