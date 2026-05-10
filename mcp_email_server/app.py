@@ -257,29 +257,56 @@ async def list_mailboxes(
     return await handler.list_mailboxes(pattern, subscribed_only)
 
 
-@mcp.tool(description="Create a mailbox on the IMAP server.")
+@mcp.tool(
+    description=(
+        "Create a mailbox on the IMAP server. ALWAYS use '/' as the path separator, "
+        "even when the underlying IMAP server uses '.' or another character — this tool "
+        "auto-detects the server delimiter and translates internally. Example: pass "
+        "'INBOX/Projekte/Kunden' to create 'Kunden' as a subfolder of 'Projekte' under "
+        "'INBOX'. Passing 'INBOX.Foo' instead would create a flat top-level folder "
+        "literally named 'INBOX.Foo', not a subfolder. Parent folders are NOT auto-created."
+    )
+)
 async def create_mailbox(
     account_name: Annotated[str, Field(description="The name of the email account.")],
-    mailbox: Annotated[str, Field(description="Mailbox path in canonical user syntax.")],
+    mailbox: Annotated[
+        str,
+        Field(description="New mailbox path. ALWAYS use '/' as the separator (e.g. 'INBOX/Subfolder')."),
+    ],
 ) -> str:
     handler = dispatch_handler(account_name)
     return await handler.create_mailbox(mailbox)
 
 
-@mcp.tool(description="Rename a mailbox on the IMAP server.")
+@mcp.tool(
+    description=(
+        "Rename a mailbox on the IMAP server. Use '/' as the separator for hierarchical "
+        "paths (e.g. 'INBOX/Old' -> 'INBOX/New'). The tool translates '/' to the server's "
+        "actual delimiter automatically. Missing parent folders in new_mailbox are NOT "
+        "auto-created."
+    )
+)
 async def rename_mailbox(
     account_name: Annotated[str, Field(description="The name of the email account.")],
-    old_mailbox: Annotated[str, Field(description="Existing mailbox path in canonical user syntax.")],
-    new_mailbox: Annotated[str, Field(description="New mailbox path in canonical user syntax.")],
+    old_mailbox: Annotated[str, Field(description="Existing mailbox path. Use '/' as the separator.")],
+    new_mailbox: Annotated[str, Field(description="New mailbox path. Use '/' as the separator.")],
 ) -> str:
     handler = dispatch_handler(account_name)
     return await handler.rename_mailbox(old_mailbox, new_mailbox)
 
 
-@mcp.tool(description="Delete a mailbox from the IMAP server. Requires confirm=True.")
+@mcp.tool(
+    description=(
+        "Delete a mailbox from the IMAP server. Requires confirm=True. Use '/' as the "
+        "path separator (e.g. 'INBOX/Subfolder'). The tool translates to the server's "
+        "actual delimiter. To delete a flat folder whose literal name contains '.', "
+        "pass the literal name without '/' (e.g. 'INBOX.Misnamed') — no translation "
+        "happens when '/' is absent."
+    )
+)
 async def delete_mailbox(
     account_name: Annotated[str, Field(description="The name of the email account.")],
-    mailbox: Annotated[str, Field(description="Mailbox path in canonical user syntax.")],
+    mailbox: Annotated[str, Field(description="Mailbox path. Use '/' as the separator for hierarchies.")],
     confirm: Annotated[bool, Field(default=False, description="Must be True to delete the mailbox.")] = False,
 ) -> str:
     if not confirm:
