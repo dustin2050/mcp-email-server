@@ -116,6 +116,19 @@ class EmailHandler(abc.ABC):
         """
 
     @abc.abstractmethod
+    async def get_attachment_content(
+        self,
+        email_id: str,
+        attachment_name: str,
+        mailbox: str = "INBOX",
+    ) -> dict:
+        """Fetch an email attachment and return its raw bytes inline.
+
+        Returns a dict with keys: ``email_id``, ``attachment_name``, ``mime_type``,
+        ``size`` (int, bytes), ``data`` (bytes). No filesystem side effects.
+        """
+
+    @abc.abstractmethod
     async def list_mailboxes(self, pattern: str = "*", subscribed_only: bool = False) -> list["MailboxInfo"]:
         """List mailboxes."""
 

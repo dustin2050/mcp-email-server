@@ -621,23 +621,17 @@ class EmailClient:
             except Exception as e:
                 logger.info(f"Error during logout: {e}")
 
-    async def download_attachment(
+    async def _fetch_attachment_bytes(
         self,
         email_id: str,
         attachment_name: str,
-        save_path: str,
         mailbox: str = "INBOX",
-    ) -> dict[str, Any]:
-        """Download a specific attachment from an email and save it to disk.
+    ) -> tuple[bytes, str]:
+        """Fetch a single attachment's raw bytes + MIME type via IMAP.
 
-        Args:
-            email_id: The UID of the email containing the attachment.
-            attachment_name: The filename of the attachment to download.
-            save_path: The local path where the attachment will be saved.
-            mailbox: The mailbox to search in (default: "INBOX").
-
-        Returns:
-            A dictionary with download result information.
+        Shared by ``download_attachment`` (saves to disk) and ``fetch_attachment``
+        (returns inline). Raises ``ValueError`` if the email or named attachment
+        cannot be located.
         """
         imap = self._imap_connect()
         try:
@@ -663,9 +657,8 @@ class EmailClient:
             parser = BytesParser(policy=default)
             email_message = parser.parsebytes(raw_email)
 
-            # Find the attachment
-            attachment_data = None
-            mime_type = None
+            attachment_data: bytes | None = None
+            mime_type: str | None = None
 
             if email_message.is_multipart():
                 for part in email_message.walk():
@@ -684,26 +677,53 @@ class EmailClient:
                 logger.error(msg)
                 raise ValueError(msg)
 
-            # Save to disk
-            save_file = Path(save_path)
-            save_file.parent.mkdir(parents=True, exist_ok=True)
-            save_file.write_bytes(attachment_data)
-
-            logger.info(f"Attachment '{attachment_name}' saved to {save_path}")
-
-            return {
-                "email_id": email_id,
-                "attachment_name": attachment_name,
-                "mime_type": mime_type or "application/octet-stream",
-                "size": len(attachment_data),
-                "saved_path": str(save_file.resolve()),
-            }
+            return attachment_data, mime_type or "application/octet-stream"
 
         finally:
             try:
                 await imap.logout()
             except Exception as e:
                 logger.info(f"Error during logout: {e}")
+
+    async def download_attachment(
+        self,
+        email_id: str,
+        attachment_name: str,
+        save_path: str,
+        mailbox: str = "INBOX",
+    ) -> dict[str, Any]:
+        """Download a specific attachment from an email and save it to disk."""
+        attachment_data, mime_type = await self._fetch_attachment_bytes(email_id, attachment_name, mailbox)
+
+        save_file = Path(save_path)
+        save_file.parent.mkdir(parents=True, exist_ok=True)
+        save_file.write_bytes(attachment_data)
+
+        logger.info(f"Attachment '{attachment_name}' saved to {save_path}")
+
+        return {
+            "email_id": email_id,
+            "attachment_name": attachment_name,
+            "mime_type": mime_type,
+            "size": len(attachment_data),
+            "saved_path": str(save_file.resolve()),
+        }
+
+    async def fetch_attachment(
+        self,
+        email_id: str,
+        attachment_name: str,
+        mailbox: str = "INBOX",
+    ) -> dict[str, Any]:
+        """Fetch an attachment and return its bytes inline (no disk write)."""
+        attachment_data, mime_type = await self._fetch_attachment_bytes(email_id, attachment_name, mailbox)
+        return {
+            "email_id": email_id,
+            "attachment_name": attachment_name,
+            "mime_type": mime_type,
+            "size": len(attachment_data),
+            "data": attachment_data,
+        }
 
     def _validate_attachment(self, file_path: str) -> Path:
         """Validate attachment file path."""
@@ -1145,6 +1165,15 @@ class ClassicEmailHandler(EmailHandler):
             size=result["size"],
             saved_path=result["saved_path"],
         )
+
+    async def get_attachment_content(
+        self,
+        email_id: str,
+        attachment_name: str,
+        mailbox: str = "INBOX",
+    ) -> dict:
+        """Fetch an email attachment inline (bytes, no disk write)."""
+        return await self.incoming_client.fetch_attachment(email_id, attachment_name, mailbox)
 
     async def list_mailboxes(self, pattern: str = "*", subscribed_only: bool = False) -> list[MailboxInfo]:
         return await self.mailbox_ops.list_mailboxes(pattern, subscribed_only)

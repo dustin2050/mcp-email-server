@@ -1,7 +1,10 @@
+import base64
 from datetime import datetime
 from typing import Annotated, Literal
+from urllib.parse import quote
 
 from mcp.server.fastmcp import FastMCP
+from mcp.types import BlobResourceContents, EmbeddedResource, ImageContent, TextContent
 from pydantic import Field
 from starlette.responses import JSONResponse
 
@@ -245,6 +248,62 @@ async def download_attachment(
 
     handler = dispatch_handler(account_name)
     return await handler.download_attachment(email_id, attachment_name, save_path, mailbox)
+
+
+# Cap inline attachment payload to keep MCP responses transport-friendly.
+# Anything above is rejected with a hint to use download_attachment instead.
+_ATTACHMENT_MAX_INLINE_BYTES = 20 * 1024 * 1024  # 20 MiB
+
+
+@mcp.tool(
+    description=(
+        "Fetch an email attachment and return its content inline (base64). "
+        "Images are returned as image content blocks (viewable by the client); "
+        "other types (PDF, docs, etc.) are returned as embedded resource blobs. "
+        "Use this when you want to read/view an attachment directly. For saving "
+        "to a local filesystem path, use `download_attachment` instead. "
+        f"Payload cap: {_ATTACHMENT_MAX_INLINE_BYTES // (1024 * 1024)} MiB."
+    ),
+)
+async def get_attachment(
+    account_name: Annotated[str, Field(description="The name of the email account.")],
+    email_id: Annotated[
+        str, Field(description="The email ID (obtained from list_emails_metadata or get_emails_content).")
+    ],
+    attachment_name: Annotated[
+        str, Field(description="The name of the attachment to fetch (as shown in the attachments list).")
+    ],
+    mailbox: Annotated[str, Field(description="The mailbox to search in (default: INBOX).")] = "INBOX",
+) -> list[ImageContent | EmbeddedResource | TextContent]:
+    handler = dispatch_handler(account_name)
+    result = await handler.get_attachment_content(email_id, attachment_name, mailbox)
+
+    data: bytes = result["data"]
+    mime: str = result["mime_type"] or "application/octet-stream"
+    size: int = result["size"]
+
+    if size > _ATTACHMENT_MAX_INLINE_BYTES:
+        limit_mib = _ATTACHMENT_MAX_INLINE_BYTES // (1024 * 1024)
+        actual_mib = size / (1024 * 1024)
+        msg = (
+            f"Attachment '{attachment_name}' is {actual_mib:.1f} MiB which exceeds the "
+            f"inline cap of {limit_mib} MiB. Use download_attachment to save it to disk."
+        )
+        raise ValueError(msg)
+
+    b64 = base64.b64encode(data).decode("ascii")
+    summary = TextContent(
+        type="text",
+        text=(
+            f"Attachment '{attachment_name}' ({mime}, {size} bytes) from email {email_id}."
+        ),
+    )
+    if mime.startswith("image/"):
+        return [summary, ImageContent(type="image", data=b64, mimeType=mime)]
+
+    uri = f"attachment://{account_name}/{quote(mailbox, safe='')}/{email_id}/{quote(attachment_name, safe='')}"
+    blob = BlobResourceContents(uri=uri, mimeType=mime, blob=b64)
+    return [summary, EmbeddedResource(type="resource", resource=blob)]
 
 
 @mcp.tool(description="List available mailboxes for an account.")
