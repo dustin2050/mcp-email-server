@@ -26,6 +26,7 @@ dependencies = [
     "mcp[cli]>=1.23.0,<2",
     "pydantic>=2.11.0",
     "pydantic-settings[toml]>=2.11.0",
+    "pypdf>=5.0.0",
     "tomli-w>=1.2.0",
     "typer>=0.15.1",
 ]

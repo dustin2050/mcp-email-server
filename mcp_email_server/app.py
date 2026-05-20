@@ -255,13 +255,47 @@ async def download_attachment(
 _ATTACHMENT_MAX_INLINE_BYTES = 20 * 1024 * 1024  # 20 MiB
 
 
+def _extract_pdf_text(data: bytes) -> str | None:
+    """Extract text from a PDF blob. Returns None if extraction yields nothing
+    (e.g. scanned PDF) or if pypdf raises."""
+    from io import BytesIO
+
+    from pypdf import PdfReader
+
+    try:
+        reader = PdfReader(BytesIO(data))
+        chunks = []
+        for i, page in enumerate(reader.pages, start=1):
+            page_text = (page.extract_text() or "").strip()
+            if page_text:
+                chunks.append(f"--- page {i} ---\n{page_text}")
+        text = "\n\n".join(chunks).strip()
+        return text or None
+    except Exception:
+        return None
+
+
+def _decode_text_attachment(data: bytes, mime: str) -> str | None:
+    """Decode a text/* attachment. Returns None on decode failure."""
+    # Try common encodings; charset is often missing from mail attachments.
+    for enc in ("utf-8", "utf-8-sig", "latin-1"):
+        try:
+            return data.decode(enc)
+        except UnicodeDecodeError:
+            continue
+    return None
+
+
 @mcp.tool(
     description=(
-        "Fetch an email attachment and return its content inline (base64). "
-        "Images are returned as image content blocks (viewable by the client); "
-        "other types (PDF, docs, etc.) are returned as embedded resource blobs. "
-        "Use this when you want to read/view an attachment directly. For saving "
-        "to a local filesystem path, use `download_attachment` instead. "
+        "Fetch an email attachment and return its content inline. By default "
+        "(mode='auto') the server picks the best representation: images come back "
+        "as image content blocks (viewable in the chat), PDFs and text files are "
+        "returned as extracted plain text (much smaller, directly readable by the "
+        "model — no base64 round-trip), other binaries as embedded resource blobs. "
+        "Use mode='text' to force text extraction (errors if not possible), "
+        "mode='raw' to force the raw base64 blob. For saving to a local filesystem "
+        "path, use `download_attachment` instead. "
         f"Payload cap: {_ATTACHMENT_MAX_INLINE_BYTES // (1024 * 1024)} MiB."
     ),
 )
@@ -274,6 +308,16 @@ async def get_attachment(
         str, Field(description="The name of the attachment to fetch (as shown in the attachments list).")
     ],
     mailbox: Annotated[str, Field(description="The mailbox to search in (default: INBOX).")] = "INBOX",
+    mode: Annotated[
+        Literal["auto", "text", "raw"],
+        Field(
+            description=(
+                "How to return the attachment. 'auto' (default): server picks the best "
+                "representation per MIME type. 'text': force text extraction (PDF → text "
+                "via pypdf, text/* → decoded). 'raw': always return the raw base64 blob."
+            )
+        ),
+    ] = "auto",
 ) -> list[ImageContent | EmbeddedResource | TextContent]:
     handler = dispatch_handler(account_name)
     result = await handler.get_attachment_content(email_id, attachment_name, mailbox)
@@ -291,18 +335,76 @@ async def get_attachment(
         )
         raise ValueError(msg)
 
-    b64 = base64.b64encode(data).decode("ascii")
     summary = TextContent(
         type="text",
-        text=(
-            f"Attachment '{attachment_name}' ({mime}, {size} bytes) from email {email_id}."
-        ),
+        text=f"Attachment '{attachment_name}' ({mime}, {size} bytes) from email {email_id}.",
     )
-    if mime.startswith("image/"):
-        return [summary, ImageContent(type="image", data=b64, mimeType=mime)]
 
+    # --- mode='text': force text extraction or error ---
+    if mode == "text":
+        extracted: str | None = None
+        if mime == "application/pdf":
+            extracted = _extract_pdf_text(data)
+            if extracted is None:
+                msg = (
+                    f"Could not extract text from PDF '{attachment_name}' — likely a scanned "
+                    "document. Try mode='raw' and OCR client-side, or mode='auto' to get the blob."
+                )
+                raise ValueError(msg)
+        elif mime.startswith("text/"):
+            extracted = _decode_text_attachment(data, mime)
+            if extracted is None:
+                msg = f"Could not decode text attachment '{attachment_name}' (unknown encoding)."
+                raise ValueError(msg)
+        else:
+            msg = (
+                f"mode='text' is only supported for application/pdf and text/* MIME types, "
+                f"got '{mime}'."
+            )
+            raise ValueError(msg)
+        return [summary, TextContent(type="text", text=extracted)]
+
+    # --- mode='auto': pick best representation per MIME ---
+    if mode == "auto":
+        if mime.startswith("image/"):
+            b64 = base64.b64encode(data).decode("ascii")
+            return [summary, ImageContent(type="image", data=b64, mimeType=mime)]
+        if mime == "application/pdf":
+            extracted = _extract_pdf_text(data)
+            if extracted:
+                header = TextContent(
+                    type="text",
+                    text=(
+                        f"Extracted text from PDF '{attachment_name}' "
+                        f"({len(extracted)} chars from {size} bytes):"
+                    ),
+                )
+                return [header, TextContent(type="text", text=extracted)]
+            # Fall through to blob if extraction empty (scanned PDF)
+            note = TextContent(
+                type="text",
+                text=(
+                    f"PDF '{attachment_name}' appears to contain no extractable text "
+                    "(possibly scanned). Returning raw blob; OCR needed client-side."
+                ),
+            )
+            b64 = base64.b64encode(data).decode("ascii")
+            uri = f"attachment://{account_name}/{quote(mailbox, safe='')}/{email_id}/{quote(attachment_name, safe='')}"
+            blob = BlobResourceContents(uri=uri, mimeType=mime, blob=b64)
+            return [note, EmbeddedResource(type="resource", resource=blob)]
+        if mime.startswith("text/"):
+            decoded = _decode_text_attachment(data, mime)
+            if decoded is not None:
+                return [summary, TextContent(type="text", text=decoded)]
+            # Fall through to blob on decode failure
+
+    # --- mode='raw' or unhandled MIME in auto ---
+    b64 = base64.b64encode(data).decode("ascii")
     uri = f"attachment://{account_name}/{quote(mailbox, safe='')}/{email_id}/{quote(attachment_name, safe='')}"
     blob = BlobResourceContents(uri=uri, mimeType=mime, blob=b64)
+    if mime.startswith("image/"):
+        # raw mode for image — still return as ImageContent so client can show it
+        return [summary, ImageContent(type="image", data=b64, mimeType=mime)]
     return [summary, EmbeddedResource(type="resource", resource=blob)]
 
 
