@@ -21,7 +21,7 @@ import aioimaplib
 import aiosmtplib
 
 from mcp_email_server.emails._helpers import _create_ssl_context, _quote_mailbox, _send_imap_id
-from mcp_email_server.emails.mailbox import LIST_LINE_RE, _encode_imap_utf7
+from mcp_email_server.emails.mailbox import LIST_LINE_RE, _decode_imap_utf7, _encode_imap_utf7
 from mcp_email_server.config import EmailServer, EmailSettings
 from mcp_email_server.emails import EmailHandler
 from mcp_email_server.emails.mailbox import EmailOps, MailboxOps
@@ -878,8 +878,11 @@ class EmailClient:
                     folder_name = name_token[1:-1].decode("utf-8")
                 else:
                     folder_name = name_token.decode("utf-8")
-                logger.info(f"Found Sent folder by \\Sent flag: '{folder_name}'")
-                return folder_name
+                # Decode modified UTF-7 so callers see Unicode consistently;
+                # re-encoded by the caller before passing to IMAP commands.
+                decoded = _decode_imap_utf7(folder_name)
+                logger.info(f"Found Sent folder by \\Sent flag: {decoded!r}")
+                return decoded
         except Exception as e:
             logger.debug(f"Error finding Sent folder by flag: {e}")
 
@@ -904,12 +907,12 @@ class EmailClient:
         else:
             imap = aioimaplib.IMAP4(incoming_server.host, incoming_server.port)
 
-        # Common Sent folder names across different providers. User-supplied
-        # names may contain non-ASCII (e.g. "Gesendete Elemente" or umlauts),
-        # which IMAP requires in modified UTF-7. The hardcoded candidates and
-        # flag-detected names are already plain-ASCII / raw server-encoded.
+        # Candidates are kept as Unicode throughout (user-supplied names may
+        # contain umlauts, flag-detected names are decoded by
+        # _find_sent_folder_by_flag). Each candidate is encoded to modified
+        # UTF-7 at the IMAP call site below.
         sent_folder_candidates = [
-            _encode_imap_utf7(sent_folder_name) if sent_folder_name else None,
+            sent_folder_name,
             "Sent",
             "INBOX.Sent",
             "Sent Items",
@@ -917,7 +920,6 @@ class EmailClient:
             "[Gmail]/Sent Mail",
             "INBOX/Sent",
         ]
-        # Filter out None values
         sent_folder_candidates = [f for f in sent_folder_candidates if f]
 
         try:
@@ -932,37 +934,37 @@ class EmailClient:
                 # Add it at the beginning (high priority)
                 sent_folder_candidates.insert(0, flag_folder)
 
-            # Try to find and use the Sent folder
+            # Encode each Unicode candidate to modified UTF-7 right before
+            # passing it to the IMAP protocol. ASCII names round-trip identity.
             for folder in sent_folder_candidates:
+                imap_folder = _quote_mailbox(_encode_imap_utf7(folder))
                 try:
-                    logger.debug(f"Trying Sent folder: '{folder}'")
-                    # Try to select the folder to verify it exists
-                    result = await imap.select(_quote_mailbox(folder))
-                    logger.debug(f"Select result for '{folder}': {result}")
+                    logger.debug(f"Trying Sent folder: {folder!r}")
+                    result = await imap.select(imap_folder)
+                    logger.debug(f"Select result for {folder!r}: {result}")
 
                     # aioimaplib returns (status, data) where status is a string like 'OK' or 'NO'
                     status = result[0] if isinstance(result, tuple) else result
                     if str(status).upper() == "OK":
-                        # Folder exists, append the message
                         msg_bytes = msg.as_bytes()
-                        logger.debug(f"Appending message to '{folder}'")
+                        logger.debug(f"Appending message to {folder!r}")
                         # aioimaplib.append signature: (message_bytes, mailbox, flags, date)
                         append_result = await imap.append(
                             msg_bytes,
-                            mailbox=_quote_mailbox(folder),
+                            mailbox=imap_folder,
                             flags=r"(\Seen)",
                         )
                         logger.debug(f"Append result: {append_result}")
                         append_status = append_result[0] if isinstance(append_result, tuple) else append_result
                         if str(append_status).upper() == "OK":
-                            logger.info(f"Saved sent email to '{folder}'")
+                            logger.info(f"Saved sent email to {folder!r}")
                             return True, folder
                         else:
-                            logger.warning(f"Failed to append to '{folder}': {append_status}")
+                            logger.warning(f"Failed to append to {folder!r}: {append_status}")
                     else:
-                        logger.debug(f"Folder '{folder}' select returned: {status}")
+                        logger.debug(f"Folder {folder!r} select returned: {status}")
                 except Exception as e:
-                    logger.debug(f"Folder '{folder}' not available: {e}")
+                    logger.debug(f"Folder {folder!r} not available: {e}")
                     continue
 
             logger.warning("Could not find a valid Sent folder to save the message")
@@ -1183,7 +1185,11 @@ class ClassicEmailHandler(EmailHandler):
 
     async def delete_emails(self, email_ids: list[str], mailbox: str = "INBOX") -> tuple[list[str], list[str]]:
         """Delete emails by their UIDs. Returns (deleted_ids, failed_ids)."""
-        return await self.incoming_client.delete_emails(email_ids, mailbox)
+        # Route user-facing path through MailboxOps so the delimiter is detected
+        # and non-ASCII folder names (e.g. "Gelöscht") are encoded to modified
+        # UTF-7. EmailClient sees the IMAP-native path and selects it correctly.
+        await self.mailbox_ops.ensure_delimiter()
+        return await self.incoming_client.delete_emails(email_ids, self.mailbox_ops.to_imap_path(mailbox))
 
     async def download_attachment(
         self,

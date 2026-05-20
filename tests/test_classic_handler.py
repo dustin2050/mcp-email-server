@@ -282,10 +282,14 @@ class TestClassicEmailHandler:
 
     @pytest.mark.asyncio
     async def test_delete_emails(self, classic_handler):
-        """Test delete_emails method."""
+        """Test delete_emails method. The handler now routes the mailbox path
+        through MailboxOps to detect the delimiter and encode modified UTF-7,
+        so we pre-set the cached delimiter and stub ensure_delimiter."""
         mock_delete = AsyncMock(return_value=(["123", "456"], []))
+        classic_handler.mailbox_ops._delimiter = "/"
 
-        with patch.object(classic_handler.incoming_client, "delete_emails", mock_delete):
+        with patch.object(classic_handler.incoming_client, "delete_emails", mock_delete), \
+             patch.object(classic_handler.mailbox_ops, "ensure_delimiter", AsyncMock(return_value="/")):
             deleted_ids, failed_ids = await classic_handler.delete_emails(
                 email_ids=["123", "456"],
                 mailbox="INBOX",
@@ -299,8 +303,10 @@ class TestClassicEmailHandler:
     async def test_delete_emails_with_failures(self, classic_handler):
         """Test delete_emails method with some failures."""
         mock_delete = AsyncMock(return_value=(["123"], ["456"]))
+        classic_handler.mailbox_ops._delimiter = "/"
 
-        with patch.object(classic_handler.incoming_client, "delete_emails", mock_delete):
+        with patch.object(classic_handler.incoming_client, "delete_emails", mock_delete), \
+             patch.object(classic_handler.mailbox_ops, "ensure_delimiter", AsyncMock(return_value="/")):
             deleted_ids, failed_ids = await classic_handler.delete_emails(
                 email_ids=["123", "456"],
                 mailbox="Trash",
@@ -314,8 +320,10 @@ class TestClassicEmailHandler:
     async def test_delete_emails_custom_mailbox(self, classic_handler):
         """Test delete_emails method with custom mailbox."""
         mock_delete = AsyncMock(return_value=(["789"], []))
+        classic_handler.mailbox_ops._delimiter = "/"
 
-        with patch.object(classic_handler.incoming_client, "delete_emails", mock_delete):
+        with patch.object(classic_handler.incoming_client, "delete_emails", mock_delete), \
+             patch.object(classic_handler.mailbox_ops, "ensure_delimiter", AsyncMock(return_value="/")):
             deleted_ids, failed_ids = await classic_handler.delete_emails(
                 email_ids=["789"],
                 mailbox="Archive",
@@ -324,6 +332,20 @@ class TestClassicEmailHandler:
             assert deleted_ids == ["789"]
             assert failed_ids == []
             mock_delete.assert_called_once_with(["789"], "Archive")
+
+    @pytest.mark.asyncio
+    async def test_delete_emails_translates_non_ascii_mailbox_to_utf7(self, classic_handler):
+        """Regression: handler must encode non-ASCII folder names (e.g.
+        'Gelöscht') to modified UTF-7 before the IMAP layer selects them."""
+        mock_delete = AsyncMock(return_value=(["1"], []))
+        classic_handler.mailbox_ops._delimiter = "/"
+
+        with patch.object(classic_handler.incoming_client, "delete_emails", mock_delete), \
+             patch.object(classic_handler.mailbox_ops, "ensure_delimiter", AsyncMock(return_value="/")):
+            await classic_handler.delete_emails(email_ids=["1"], mailbox="Gelöscht")
+
+            # The IMAP layer must receive the UTF-7-encoded form.
+            mock_delete.assert_called_once_with(["1"], "Gel&APY-scht")
 
     @pytest.mark.asyncio
     async def test_download_attachment(self, classic_handler, tmp_path):
