@@ -40,7 +40,11 @@ def email_settings():
 
 @pytest.fixture
 def classic_handler(email_settings):
-    return ClassicEmailHandler(email_settings)
+    handler = ClassicEmailHandler(email_settings)
+    # Pre-cache the delimiter so the helper _imap_mailbox doesn't try to open
+    # a real IMAP connection for delimiter detection during unit tests.
+    handler.mailbox_ops._delimiter = "/"
+    return handler
 
 
 class TestClassicEmailHandler:

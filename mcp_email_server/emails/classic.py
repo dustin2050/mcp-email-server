@@ -1039,6 +1039,14 @@ class ClassicEmailHandler(EmailHandler):
         self.save_to_sent = email_settings.save_to_sent
         self.sent_folder_name = email_settings.sent_folder_name
 
+    async def _imap_mailbox(self, mailbox: str) -> str:
+        """Translate a user-facing mailbox path to its IMAP-native form (modified
+        UTF-7 segments joined by the server delimiter). Without this, non-ASCII
+        folder names (e.g. 'Gelöscht') or '/'-style paths reach IMAP raw and the
+        SELECT silently fails. Delimiter is cached after first detection."""
+        await self.mailbox_ops.ensure_delimiter()
+        return self.mailbox_ops.to_imap_path(mailbox)
+
     async def get_emails_metadata(
         self,
         page: int = 1,
@@ -1057,6 +1065,7 @@ class ClassicEmailHandler(EmailHandler):
         answered: bool | None = None,
     ) -> EmailMetadataPageResponse:
         emails = []
+        imap_mailbox = await self._imap_mailbox(mailbox)
         async for email_data in self.incoming_client.get_emails_metadata_stream(
             page,
             page_size,
@@ -1068,7 +1077,7 @@ class ClassicEmailHandler(EmailHandler):
             from_address,
             to_address,
             order,
-            mailbox,
+            imap_mailbox,
             seen,
             flagged,
             answered,
@@ -1082,7 +1091,7 @@ class ClassicEmailHandler(EmailHandler):
             text=text,
             from_address=from_address,
             to_address=to_address,
-            mailbox=mailbox,
+            mailbox=imap_mailbox,
             seen=seen,
             flagged=flagged,
             answered=answered,
@@ -1101,10 +1110,11 @@ class ClassicEmailHandler(EmailHandler):
         """Batch retrieve email body content"""
         emails = []
         failed_ids = []
+        imap_mailbox = await self._imap_mailbox(mailbox)
 
         for email_id in email_ids:
             try:
-                email_data = await self.incoming_client.get_email_body_by_id(email_id, mailbox)
+                email_data = await self.incoming_client.get_email_body_by_id(email_id, imap_mailbox)
                 if email_data:
                     emails.append(
                         EmailBodyResponse(
@@ -1185,11 +1195,7 @@ class ClassicEmailHandler(EmailHandler):
 
     async def delete_emails(self, email_ids: list[str], mailbox: str = "INBOX") -> tuple[list[str], list[str]]:
         """Delete emails by their UIDs. Returns (deleted_ids, failed_ids)."""
-        # Route user-facing path through MailboxOps so the delimiter is detected
-        # and non-ASCII folder names (e.g. "Gelöscht") are encoded to modified
-        # UTF-7. EmailClient sees the IMAP-native path and selects it correctly.
-        await self.mailbox_ops.ensure_delimiter()
-        return await self.incoming_client.delete_emails(email_ids, self.mailbox_ops.to_imap_path(mailbox))
+        return await self.incoming_client.delete_emails(email_ids, await self._imap_mailbox(mailbox))
 
     async def download_attachment(
         self,
@@ -1209,7 +1215,9 @@ class ClassicEmailHandler(EmailHandler):
         Returns:
             AttachmentDownloadResponse with download result information.
         """
-        result = await self.incoming_client.download_attachment(email_id, attachment_name, save_path, mailbox)
+        result = await self.incoming_client.download_attachment(
+            email_id, attachment_name, save_path, await self._imap_mailbox(mailbox)
+        )
         return AttachmentDownloadResponse(
             email_id=result["email_id"],
             attachment_name=result["attachment_name"],
@@ -1225,7 +1233,9 @@ class ClassicEmailHandler(EmailHandler):
         mailbox: str = "INBOX",
     ) -> dict:
         """Fetch an email attachment inline (bytes, no disk write)."""
-        return await self.incoming_client.fetch_attachment(email_id, attachment_name, mailbox)
+        return await self.incoming_client.fetch_attachment(
+            email_id, attachment_name, await self._imap_mailbox(mailbox)
+        )
 
     async def list_mailboxes(self, pattern: str = "*", subscribed_only: bool = False) -> list[MailboxInfo]:
         return await self.mailbox_ops.list_mailboxes(pattern, subscribed_only)
