@@ -21,6 +21,7 @@ import aioimaplib
 import aiosmtplib
 
 from mcp_email_server.emails._helpers import _create_ssl_context, _quote_mailbox, _send_imap_id
+from mcp_email_server.emails.mailbox import LIST_LINE_RE
 from mcp_email_server.config import EmailServer, EmailSettings
 from mcp_email_server.emails import EmailHandler
 from mcp_email_server.emails.mailbox import EmailOps, MailboxOps
@@ -852,29 +853,32 @@ class EmailClient:
     async def _find_sent_folder_by_flag(self, imap) -> str | None:
         """Find the Sent folder by searching for the \\Sent IMAP flag.
 
-        Args:
-            imap: Connected IMAP client
-
-        Returns:
-            The folder name with the \\Sent flag, or None if not found
+        IMAP LIST entries follow ``(flags) "delim" name``. The name can be
+        either a quoted string (when it contains spaces / special chars) or
+        a bare atom — both forms must be handled, otherwise the parser
+        misreads the delimiter as the folder name (GMX bug).
         """
         try:
-            # List all folders - aioimaplib requires reference_name and mailbox_pattern
             _, folders = await imap.list('""', "*")
 
-            # Search for folder with \Sent flag
             for folder in folders:
-                folder_str = folder.decode("utf-8") if isinstance(folder, bytes) else str(folder)
-                # IMAP LIST response format: (flags) "delimiter" "name"
-                # Example: (\Sent \HasNoChildren) "/" "Gesendete Objekte"
-                if r"\Sent" in folder_str or "\\Sent" in folder_str:
-                    # Extract folder name from the response
-                    # Split by quotes and get the last quoted part
-                    parts = folder_str.split('"')
-                    if len(parts) >= 3:
-                        folder_name = parts[-2]  # The folder name is the second-to-last quoted part
-                        logger.info(f"Found Sent folder by \\Sent flag: '{folder_name}'")
-                        return folder_name
+                if isinstance(folder, str):
+                    folder = folder.encode("utf-8")
+                elif not isinstance(folder, bytes):
+                    continue
+                match = LIST_LINE_RE.match(folder)
+                if not match:
+                    continue
+                flags_bytes = match.group("flags") or b""
+                if rb"\Sent" not in flags_bytes:
+                    continue
+                name_token = match.group("name").strip()
+                if name_token.startswith(b'"') and name_token.endswith(b'"'):
+                    folder_name = name_token[1:-1].decode("utf-8")
+                else:
+                    folder_name = name_token.decode("utf-8")
+                logger.info(f"Found Sent folder by \\Sent flag: '{folder_name}'")
+                return folder_name
         except Exception as e:
             logger.debug(f"Error finding Sent folder by flag: {e}")
 

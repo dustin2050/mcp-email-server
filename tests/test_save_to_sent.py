@@ -534,6 +534,26 @@ class TestFindSentFolderByFlag:
         result = await email_client._find_sent_folder_by_flag(mock)
         assert result == "Sent Items"
 
+    @pytest.mark.asyncio
+    async def test_find_sent_folder_by_flag_unquoted_name_gmx(self, email_client):
+        """Regression: GMX returns the folder name as a bare atom (no quotes)
+        when it has no spaces. The previous quote-split parser misread the
+        delimiter '/' as the folder name and silently broke save-to-sent."""
+        mock = AsyncMock()
+        mock.list = AsyncMock(
+            return_value=(
+                "OK",
+                [
+                    b'(\\HasNoChildren) "/" Drafts',
+                    b'(\\Sent \\NoInferiors) "/" Gesendet',  # GMX-style unquoted
+                    b'(\\HasChildren) "/" INBOX',
+                ],
+            )
+        )
+
+        result = await email_client._find_sent_folder_by_flag(mock)
+        assert result == "Gesendet"
+
 
 class TestAppendToSentWithFlagDetection:
     """Tests for append_to_sent integration with flag detection."""
