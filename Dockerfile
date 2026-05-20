@@ -2,9 +2,13 @@
 # Install uv
 FROM python:3.12-slim
 
-# Install tini
+# Install tini and tesseract OCR (German + English language data)
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends tini && \
+    apt-get install -y --no-install-recommends \
+        tini \
+        tesseract-ocr \
+        tesseract-ocr-deu \
+        tesseract-ocr-eng && \
     rm -rf /var/lib/apt/lists/*
 
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /bin/uv

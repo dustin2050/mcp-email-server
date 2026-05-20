@@ -275,6 +275,52 @@ def _extract_pdf_text(data: bytes) -> str | None:
         return None
 
 
+_OCR_LANG = "deu+eng"
+_OCR_MAX_PAGES = 50
+_OCR_DPI = 200
+
+
+def _ocr_pdf(data: bytes) -> str | None:
+    """OCR a PDF by rendering pages to images and running tesseract.
+    Returns None on failure (e.g. tesseract not installed) or empty result."""
+    try:
+        import pypdfium2 as pdfium
+        import pytesseract
+    except ImportError:
+        return None
+    try:
+        pdf = pdfium.PdfDocument(data)
+        n = min(len(pdf), _OCR_MAX_PAGES)
+        chunks = []
+        for i in range(n):
+            page = pdf[i]
+            bitmap = page.render(scale=_OCR_DPI / 72)
+            pil_image = bitmap.to_pil()
+            page_text = pytesseract.image_to_string(pil_image, lang=_OCR_LANG).strip()
+            if page_text:
+                chunks.append(f"--- page {i + 1} (OCR) ---\n{page_text}")
+        return "\n\n".join(chunks).strip() or None
+    except Exception:
+        return None
+
+
+def _ocr_image(data: bytes) -> str | None:
+    """OCR an image blob via tesseract."""
+    try:
+        from io import BytesIO
+
+        import pytesseract
+        from PIL import Image
+    except ImportError:
+        return None
+    try:
+        img = Image.open(BytesIO(data))
+        text = pytesseract.image_to_string(img, lang=_OCR_LANG).strip()
+        return text or None
+    except Exception:
+        return None
+
+
 def _decode_text_attachment(data: bytes, mime: str) -> str | None:
     """Decode a text/* attachment. Returns None on decode failure."""
     # Try common encodings; charset is often missing from mail attachments.
@@ -290,13 +336,15 @@ def _decode_text_attachment(data: bytes, mime: str) -> str | None:
     description=(
         "Fetch an email attachment and return its content inline. By default "
         "(mode='auto') the server picks the best representation: images come back "
-        "as image content blocks (viewable in the chat), PDFs and text files are "
-        "returned as extracted plain text (much smaller, directly readable by the "
-        "model — no base64 round-trip), other binaries as embedded resource blobs. "
-        "Use mode='text' to force text extraction (errors if not possible), "
+        "as image content blocks (viewable in the chat), PDFs are returned as "
+        "extracted plain text (falls back to OCR via tesseract for scanned PDFs), "
+        "text files as decoded text, other binaries as embedded resource blobs. "
+        "Use mode='text' to force text extraction (PDF text layer first, then OCR), "
+        "mode='ocr' to force OCR (for PDFs and images, useful for scanned docs), "
         "mode='raw' to force the raw base64 blob. For saving to a local filesystem "
         "path, use `download_attachment` instead. "
-        f"Payload cap: {_ATTACHMENT_MAX_INLINE_BYTES // (1024 * 1024)} MiB."
+        f"Payload cap: {_ATTACHMENT_MAX_INLINE_BYTES // (1024 * 1024)} MiB. "
+        f"OCR languages: {_OCR_LANG}."
     ),
 )
 async def get_attachment(
@@ -309,12 +357,14 @@ async def get_attachment(
     ],
     mailbox: Annotated[str, Field(description="The mailbox to search in (default: INBOX).")] = "INBOX",
     mode: Annotated[
-        Literal["auto", "text", "raw"],
+        Literal["auto", "text", "ocr", "raw"],
         Field(
             description=(
                 "How to return the attachment. 'auto' (default): server picks the best "
-                "representation per MIME type. 'text': force text extraction (PDF → text "
-                "via pypdf, text/* → decoded). 'raw': always return the raw base64 blob."
+                "representation per MIME type; PDFs use embedded text layer with OCR "
+                "fallback for scans. 'text': force text extraction (PDF text layer first, "
+                "then OCR; text/* decoded). 'ocr': force tesseract OCR (PDFs and images). "
+                "'raw': always return the raw base64 blob."
             )
         ),
     ] = "auto",
@@ -340,16 +390,44 @@ async def get_attachment(
         text=f"Attachment '{attachment_name}' ({mime}, {size} bytes) from email {email_id}.",
     )
 
-    # --- mode='text': force text extraction or error ---
+    # --- mode='ocr': force tesseract on PDFs / images ---
+    if mode == "ocr":
+        if mime == "application/pdf":
+            ocr_text = _ocr_pdf(data)
+        elif mime.startswith("image/"):
+            ocr_text = _ocr_image(data)
+        else:
+            msg = (
+                f"mode='ocr' is only supported for application/pdf and image/* MIME types, "
+                f"got '{mime}'."
+            )
+            raise ValueError(msg)
+        if ocr_text is None:
+            msg = f"OCR produced no text for '{attachment_name}' (tesseract missing, or empty result)."
+            raise ValueError(msg)
+        header = TextContent(
+            type="text",
+            text=f"OCR text from '{attachment_name}' ({len(ocr_text)} chars, lang={_OCR_LANG}):",
+        )
+        return [header, TextContent(type="text", text=ocr_text)]
+
+    # --- mode='text': prefer text layer, fall back to OCR, error if both fail ---
     if mode == "text":
         extracted: str | None = None
         if mime == "application/pdf":
             extracted = _extract_pdf_text(data)
             if extracted is None:
+                extracted = _ocr_pdf(data)
+            if extracted is None:
                 msg = (
-                    f"Could not extract text from PDF '{attachment_name}' — likely a scanned "
-                    "document. Try mode='raw' and OCR client-side, or mode='auto' to get the blob."
+                    f"Could not extract text from PDF '{attachment_name}' — neither text "
+                    "layer nor OCR yielded anything."
                 )
+                raise ValueError(msg)
+        elif mime.startswith("image/"):
+            extracted = _ocr_image(data)
+            if extracted is None:
+                msg = f"OCR yielded no text for image '{attachment_name}'."
                 raise ValueError(msg)
         elif mime.startswith("text/"):
             extracted = _decode_text_attachment(data, mime)
@@ -358,40 +436,44 @@ async def get_attachment(
                 raise ValueError(msg)
         else:
             msg = (
-                f"mode='text' is only supported for application/pdf and text/* MIME types, "
-                f"got '{mime}'."
+                f"mode='text' is only supported for application/pdf, image/*, and text/* "
+                f"MIME types, got '{mime}'."
             )
             raise ValueError(msg)
         return [summary, TextContent(type="text", text=extracted)]
 
     # --- mode='auto': pick best representation per MIME ---
     if mode == "auto":
-        if mime.startswith("image/"):
-            b64 = base64.b64encode(data).decode("ascii")
-            return [summary, ImageContent(type="image", data=b64, mimeType=mime)]
         if mime == "application/pdf":
             extracted = _extract_pdf_text(data)
+            source = "text layer"
+            if not extracted:
+                extracted = _ocr_pdf(data)
+                source = "OCR"
             if extracted:
                 header = TextContent(
                     type="text",
                     text=(
-                        f"Extracted text from PDF '{attachment_name}' "
+                        f"Extracted text from PDF '{attachment_name}' via {source} "
                         f"({len(extracted)} chars from {size} bytes):"
                     ),
                 )
                 return [header, TextContent(type="text", text=extracted)]
-            # Fall through to blob if extraction empty (scanned PDF)
+            # Fall through to blob if both fail
             note = TextContent(
                 type="text",
                 text=(
-                    f"PDF '{attachment_name}' appears to contain no extractable text "
-                    "(possibly scanned). Returning raw blob; OCR needed client-side."
+                    f"PDF '{attachment_name}' yielded no text via extraction or OCR. "
+                    "Returning raw blob."
                 ),
             )
             b64 = base64.b64encode(data).decode("ascii")
             uri = f"attachment://{account_name}/{quote(mailbox, safe='')}/{email_id}/{quote(attachment_name, safe='')}"
             blob = BlobResourceContents(uri=uri, mimeType=mime, blob=b64)
             return [note, EmbeddedResource(type="resource", resource=blob)]
+        if mime.startswith("image/"):
+            b64 = base64.b64encode(data).decode("ascii")
+            return [summary, ImageContent(type="image", data=b64, mimeType=mime)]
         if mime.startswith("text/"):
             decoded = _decode_text_attachment(data, mime)
             if decoded is not None:

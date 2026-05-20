@@ -27,6 +27,8 @@ dependencies = [
     "pydantic>=2.11.0",
     "pydantic-settings[toml]>=2.11.0",
     "pypdf>=5.0.0",
+    "pypdfium2>=4.30.0",
+    "pytesseract>=0.3.10",
     "tomli-w>=1.2.0",
     "typer>=0.15.1",
 ]
