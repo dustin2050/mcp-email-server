@@ -65,6 +65,18 @@ class AttachmentDownloadResponse(BaseModel):
     saved_path: str
 
 
+class SendEmailResponse(BaseModel):
+    """Result of sending an email. SMTP delivery is independent of sent_copy:
+    if this response is returned at all, the recipient's MTA accepted the
+    message. sent_copy reflects only the IMAP Sent-folder archive."""
+
+    recipients: list[str]
+    attachments_count: int = 0
+    sent_copy: Literal["saved", "disabled", "failed"]
+    sent_copy_folder: str | None = None
+    sent_copy_error: str | None = None
+
+
 class MailboxInfo(BaseModel):
     """Mailbox information"""
 

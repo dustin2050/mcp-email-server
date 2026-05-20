@@ -24,6 +24,7 @@ from mcp_email_server.emails.models import (
     MailboxStatusResponse,
     MarkedEmail,
     MovedEmail,
+    SendEmailResponse,
 )
 from mcp_email_server.oauth import configure_fastmcp_oauth
 
@@ -147,7 +148,14 @@ async def get_emails_content(
 
 
 @mcp.tool(
-    description="Send an email using the specified account. Supports replying to emails with proper threading when in_reply_to is provided.",
+    description=(
+        "Send an email using the specified account. Supports replying to emails with "
+        "proper threading when in_reply_to is provided. The response includes a "
+        "sent_copy field indicating whether an archive copy was stored in the IMAP "
+        "Sent folder (or 'disabled' / 'failed' with a reason). SMTP delivery is "
+        "independent — if the response is returned at all, the outgoing server "
+        "accepted the message."
+    ),
 )
 async def send_email(
     account_name: Annotated[str, Field(description="The name of the email account to send from.")],
@@ -187,9 +195,9 @@ async def send_email(
             description="Space-separated Message-IDs for the thread chain. Usually includes in_reply_to plus ancestors.",
         ),
     ] = None,
-) -> str:
+) -> SendEmailResponse:
     handler = dispatch_handler(account_name)
-    await handler.send_email(
+    return await handler.send_email(
         recipients,
         subject,
         body,
@@ -200,9 +208,6 @@ async def send_email(
         in_reply_to,
         references,
     )
-    recipient_str = ", ".join(recipients)
-    attachment_info = f" with {len(attachments)} attachment(s)" if attachments else ""
-    return f"Email sent successfully to {recipient_str}{attachment_info}"
 
 
 @mcp.tool(

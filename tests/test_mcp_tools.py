@@ -416,11 +416,17 @@ class TestMcpTools:
     @pytest.mark.asyncio
     async def test_send_email(self):
         """Test send_email MCP tool."""
-        # Mock the dispatch_handler function
+        from mcp_email_server.emails.models import SendEmailResponse
+
         mock_handler = AsyncMock()
+        expected = SendEmailResponse(
+            recipients=["recipient@example.com"],
+            sent_copy="saved",
+            sent_copy_folder="Gesendet",
+        )
+        mock_handler.send_email = AsyncMock(return_value=expected)
 
         with patch("mcp_email_server.app.dispatch_handler", return_value=mock_handler):
-            # Call the function
             result = await send_email(
                 account_name="test_account",
                 recipients=["recipient@example.com"],
@@ -430,10 +436,7 @@ class TestMcpTools:
                 bcc=["bcc@example.com"],
             )
 
-            # Verify the return value
-            assert result == "Email sent successfully to recipient@example.com"
-
-            # Verify send_email was called correctly
+            assert result == expected
             mock_handler.send_email.assert_called_once_with(
                 ["recipient@example.com"],
                 "Test Subject",
@@ -749,8 +752,15 @@ class TestMcpTools:
     @pytest.mark.asyncio
     async def test_send_email_with_reply_headers(self):
         """Test send_email MCP tool with reply headers."""
+        from mcp_email_server.emails.models import SendEmailResponse
+
         mock_handler = AsyncMock()
-        mock_handler.send_email = AsyncMock()
+        mock_handler.send_email = AsyncMock(
+            return_value=SendEmailResponse(
+                recipients=["recipient@example.com"],
+                sent_copy="disabled",
+            )
+        )
 
         with patch("mcp_email_server.app.dispatch_handler", return_value=mock_handler):
             result = await send_email(
@@ -766,7 +776,7 @@ class TestMcpTools:
             call_args = mock_handler.send_email.call_args
             # Verify in_reply_to and references were passed (positions 7 and 8 after cc, bcc, html, attachments)
             assert "<original@example.com>" in str(call_args)
-            assert "recipient@example.com" in result
+            assert result.recipients == ["recipient@example.com"]
 
     @pytest.mark.asyncio
     async def test_get_emails_content_includes_message_id(self):

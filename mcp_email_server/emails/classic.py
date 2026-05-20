@@ -15,7 +15,7 @@ from email.mime.text import MIMEText
 from email.parser import BytesParser
 from email.policy import default
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import aioimaplib
 import aiosmtplib
@@ -36,6 +36,7 @@ from mcp_email_server.emails.models import (
     MailboxStatusResponse,
     MarkedEmail,
     MovedEmail,
+    SendEmailResponse,
 )
 from mcp_email_server.log import logger
 
@@ -889,16 +890,13 @@ class EmailClient:
         msg: MIMEText | MIMEMultipart,
         incoming_server: EmailServer,
         sent_folder_name: str | None = None,
-    ) -> bool:
+    ) -> tuple[bool, str | None]:
         """Append a sent message to the IMAP Sent folder.
 
-        Args:
-            msg: The email message that was sent
-            incoming_server: IMAP server configuration for accessing Sent folder
-            sent_folder_name: Override folder name, or None for auto-detection
-
         Returns:
-            True if successfully saved, False otherwise
+            (ok, folder_used). ``ok`` is True iff APPEND succeeded against some
+            candidate folder; ``folder_used`` is the folder name in that case,
+            else None.
         """
         if incoming_server.use_ssl:
             imap_ssl_context = _create_ssl_context(incoming_server.verify_ssl)
@@ -955,7 +953,7 @@ class EmailClient:
                         append_status = append_result[0] if isinstance(append_result, tuple) else append_result
                         if str(append_status).upper() == "OK":
                             logger.info(f"Saved sent email to '{folder}'")
-                            return True
+                            return True, folder
                         else:
                             logger.warning(f"Failed to append to '{folder}': {append_status}")
                     else:
@@ -965,11 +963,11 @@ class EmailClient:
                     continue
 
             logger.warning("Could not find a valid Sent folder to save the message")
-            return False
+            return False, None
 
         except Exception as e:
             logger.error(f"Error saving to Sent folder: {e}")
-            return False
+            return False, None
         finally:
             try:
                 await imap.logout()
@@ -1123,21 +1121,46 @@ class ClassicEmailHandler(EmailHandler):
         attachments: list[str] | None = None,
         in_reply_to: str | None = None,
         references: str | None = None,
-    ) -> None:
+    ) -> SendEmailResponse:
         msg = await self.outgoing_client.send_email(
             recipients, subject, body, cc, bcc, html, attachments, in_reply_to, references
         )
 
-        # Save to Sent folder if enabled
-        if self.save_to_sent and msg:
+        attachments_count = len(attachments) if attachments else 0
+        sent_copy: Literal["saved", "disabled", "failed"]
+        sent_copy_folder: str | None = None
+        sent_copy_error: str | None = None
+
+        if not self.save_to_sent:
+            sent_copy = "disabled"
+        elif not msg:
+            sent_copy = "failed"
+            sent_copy_error = "outgoing_client.send_email returned no message to archive"
+        else:
             try:
-                await self.outgoing_client.append_to_sent(
+                saved, folder = await self.outgoing_client.append_to_sent(
                     msg,
                     self.email_settings.incoming,
                     self.sent_folder_name,
                 )
+                if saved:
+                    sent_copy = "saved"
+                    sent_copy_folder = folder
+                else:
+                    sent_copy = "failed"
+                    sent_copy_error = "No Sent folder could be selected or APPEND was rejected"
             except Exception as e:
                 logger.error(f"Failed to save email to Sent folder: {e}", exc_info=True)
+                sent_copy = "failed"
+                sent_copy_error = f"{type(e).__name__}: {e}"
+
+        return SendEmailResponse(
+            recipients=recipients,
+            attachments_count=attachments_count,
+            sent_copy=sent_copy,
+            sent_copy_folder=sent_copy_folder,
+            sent_copy_error=sent_copy_error,
+        )
 
     async def delete_emails(self, email_ids: list[str], mailbox: str = "INBOX") -> tuple[list[str], list[str]]:
         """Delete emails by their UIDs. Returns (deleted_ids, failed_ids)."""

@@ -12,6 +12,7 @@ if TYPE_CHECKING:
         MailboxStatusResponse,
         MarkedEmail,
         MovedEmail,
+        SendEmailResponse,
     )
 
 
@@ -72,7 +73,7 @@ class EmailHandler(abc.ABC):
         attachments: list[str] | None = None,
         in_reply_to: str | None = None,
         references: str | None = None,
-    ) -> None:
+    ) -> "SendEmailResponse":
         """
         Send email
 

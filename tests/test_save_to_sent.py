@@ -288,7 +288,7 @@ class TestEmailClientAppendToSent:
 
             result = await email_client.append_to_sent(msg, incoming_server, "INBOX.Sent")
 
-            assert result is True
+            assert result[0] is True
             mock_imap_for_append.select.assert_called_with('"INBOX.Sent"')
             mock_imap_for_append.append.assert_called_once()
 
@@ -306,7 +306,7 @@ class TestEmailClientAppendToSent:
 
             result = await email_client.append_to_sent(msg, incoming_server, None)
 
-            assert result is True
+            assert result[0] is True
 
     @pytest.mark.asyncio
     async def test_append_to_sent_no_valid_folder(self, email_client, incoming_server, mock_imap_for_append):
@@ -321,7 +321,7 @@ class TestEmailClientAppendToSent:
 
             result = await email_client.append_to_sent(msg, incoming_server, None)
 
-            assert result is False
+            assert result[0] is False
 
     @pytest.mark.asyncio
     async def test_append_to_sent_append_fails(self, email_client, incoming_server, mock_imap_for_append):
@@ -335,7 +335,7 @@ class TestEmailClientAppendToSent:
 
             result = await email_client.append_to_sent(msg, incoming_server, "Sent")
 
-            assert result is False
+            assert result[0] is False
 
     @pytest.mark.asyncio
     async def test_append_to_sent_login_error(self, email_client, incoming_server, mock_imap_for_append):
@@ -349,7 +349,7 @@ class TestEmailClientAppendToSent:
 
             result = await email_client.append_to_sent(msg, incoming_server, "Sent")
 
-            assert result is False
+            assert result[0] is False
 
     @pytest.mark.asyncio
     async def test_append_to_sent_non_ssl(self, incoming_server, mock_imap_for_append):
@@ -378,7 +378,7 @@ class TestEmailClientAppendToSent:
 
             result = await client.append_to_sent(msg, incoming_non_ssl, "Sent")
 
-            assert result is True
+            assert result[0] is True
             mock_aioimaplib.IMAP4.assert_called_once()
 
 
@@ -606,7 +606,7 @@ class TestAppendToSentWithFlagDetection:
 
             result = await email_client.append_to_sent(msg, incoming_server, None)
 
-            assert result is True
+            assert result[0] is True
             # Verify it used the flag-detected folder with proper quoting
             mock_imap.select.assert_called_with('"Gesendete Objekte"')
 
@@ -636,7 +636,7 @@ class TestAppendToSentWithFlagDetection:
             # Even with explicit folder, flag-detected should be preferred (most reliable)
             result = await email_client.append_to_sent(msg, incoming_server, "INBOX.Sent")
 
-            assert result is True
+            assert result[0] is True
             # Should use flag-detected folder (highest priority)
             mock_imap.select.assert_called_with('"Flag Detected"')
 
