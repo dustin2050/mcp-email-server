@@ -84,9 +84,9 @@ class TestEmailOpsMove:
                 ("OK", [b"store 101"]),
                 ("OK", [b"copy 102"]),
                 ("OK", [b"store 102"]),
+                ("OK", [b"expunge completed"]),
             ]
         )
-        mock_imap.expunge = AsyncMock(return_value=("OK", [b"expunge completed"]))
 
         with patch.object(email_ops, "_login_logout") as mock_login_logout:
             mock_login_logout.return_value.__aenter__.return_value = mock_imap
@@ -97,7 +97,7 @@ class TestEmailOpsMove:
         assert all(item.success is True for item in moved)
         assert mock_imap.uid.await_args_list[1].args == ("copy", "101", '"INBOX.Archive"')
         assert mock_imap.uid.await_args_list[2].args == ("store", "101", "+FLAGS", r"(\Deleted)")
-        mock_imap.expunge.assert_awaited_once()
+        assert mock_imap.uid.await_args_list[-1].args == ("expunge", "101,102")
 
     @pytest.mark.asyncio
     async def test_move_emails_marks_tentative_successes_failed_when_expunge_fails(self, email_server):
@@ -111,9 +111,9 @@ class TestEmailOpsMove:
                 ("NO", [b"move rejected"]),
                 ("OK", [b"copy 101"]),
                 ("OK", [b"store 101"]),
+                ("NO", [b"expunge rejected"]),
             ]
         )
-        mock_imap.expunge = AsyncMock(return_value=("NO", [b"expunge rejected"]))
 
         with patch.object(email_ops, "_login_logout") as mock_login_logout:
             mock_login_logout.return_value.__aenter__.return_value = mock_imap
@@ -122,7 +122,8 @@ class TestEmailOpsMove:
 
         assert moved[0].success is False
         assert moved[0].method == "fallback"
-        assert moved[0].error == "COPY succeeded and source was flagged \\Deleted, but EXPUNGE failed; no rollback performed."
+        assert "UID EXPUNGE failed" in moved[0].error
+        assert "remain in the mailbox flagged" in moved[0].error
 
     @pytest.mark.asyncio
     async def test_move_emails_fallback_continues_after_copy_no_for_first_uid(self, email_server):
@@ -137,9 +138,9 @@ class TestEmailOpsMove:
                 ("NO", [b"copy 101 failed"]),
                 ("OK", [b"copy 102"]),
                 ("OK", [b"store 102"]),
+                ("OK", [b"expunge completed"]),
             ]
         )
-        mock_imap.expunge = AsyncMock(return_value=("OK", [b"expunge completed"]))
 
         with patch.object(email_ops, "_login_logout") as mock_login_logout:
             mock_login_logout.return_value.__aenter__.return_value = mock_imap
@@ -157,7 +158,7 @@ class TestEmailOpsMove:
         ]
         assert mock_imap.uid.await_args_list[1].args == ("copy", "101", '"INBOX.Archive"')
         assert mock_imap.uid.await_args_list[2].args == ("copy", "102", '"INBOX.Archive"')
-        mock_imap.expunge.assert_awaited_once()
+        assert mock_imap.uid.await_args_list[-1].args == ("expunge", "102")
 
     @pytest.mark.asyncio
     async def test_move_emails_fallback_store_no_does_not_attempt_rollback(self, email_server):
@@ -205,9 +206,9 @@ class TestEmailOpsMove:
                 aioimaplib.Abort("copy connection dropped"),
                 ("OK", [b"copy 102"]),
                 ("OK", [b"store 102"]),
+                ("OK", [b"expunge completed"]),
             ]
         )
-        mock_imap.expunge = AsyncMock(return_value=("OK", [b"expunge completed"]))
 
         with patch.object(email_ops, "_login_logout") as mock_login_logout:
             mock_login_logout.return_value.__aenter__.return_value = mock_imap
@@ -220,7 +221,7 @@ class TestEmailOpsMove:
         ]
         assert mock_imap.uid.await_args_list[1].args == ("copy", "101", '"INBOX.Archive"')
         assert mock_imap.uid.await_args_list[2].args == ("copy", "102", '"INBOX.Archive"')
-        mock_imap.expunge.assert_awaited_once()
+        assert mock_imap.uid.await_args_list[-1].args == ("expunge", "102")
 
 
 class TestEmailOpsCopy:

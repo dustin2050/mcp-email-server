@@ -837,3 +837,75 @@ class TestBatchFetchHeaders:
         assert len(result) == 2
         assert result["100"]["subject"] == "First"
         assert result["200"]["subject"] == "Second"
+
+
+class TestEmailClientDeleteEmailsExpunge:
+    """Regression: delete_emails previously called a bare imap.expunge() which
+    would purge ANY message flagged \\Deleted in the selected mailbox — including
+    messages from concurrent sessions. Now uses UID EXPUNGE (RFC 4315 UIDPLUS)
+    with the specific UIDs we just flagged."""
+
+    @pytest.fixture
+    def email_client_with_creds(self):
+        from mcp_email_server.config import EmailServer
+        from mcp_email_server.emails.classic import EmailClient
+
+        server = EmailServer(
+            user_name="test",
+            password="pass",
+            host="imap.test",
+            port=993,
+            use_ssl=True,
+        )
+        return EmailClient(server)
+
+    @pytest.mark.asyncio
+    async def test_delete_emails_uses_uid_expunge_with_flagged_ids(self, email_client_with_creds):
+        from unittest.mock import AsyncMock, patch
+
+        mock_imap = AsyncMock()
+        mock_imap._client_task = asyncio.sleep(0)
+        mock_imap.wait_hello_from_server = AsyncMock()
+        mock_imap.login = AsyncMock()
+        mock_imap.select = AsyncMock()
+        mock_imap.uid = AsyncMock(
+            side_effect=[
+                ("OK", [b"store 100"]),
+                ("OK", [b"store 200"]),
+                ("OK", [b"expunge completed"]),
+            ]
+        )
+        mock_imap.logout = AsyncMock()
+        mock_imap.expunge = AsyncMock()
+
+        with patch.object(email_client_with_creds, "_imap_connect", return_value=mock_imap):
+            deleted, failed = await email_client_with_creds.delete_emails(["100", "200"], "INBOX")
+
+        assert deleted == ["100", "200"]
+        assert failed == []
+        # Critically: must use UID EXPUNGE, not bare EXPUNGE.
+        mock_imap.expunge.assert_not_called()
+        assert mock_imap.uid.await_args_list[-1].args == ("expunge", "100,200")
+
+    @pytest.mark.asyncio
+    async def test_delete_emails_skips_expunge_when_no_ids_succeeded(self, email_client_with_creds):
+        from unittest.mock import AsyncMock, patch
+
+        mock_imap = AsyncMock()
+        mock_imap._client_task = asyncio.sleep(0)
+        mock_imap.wait_hello_from_server = AsyncMock()
+        mock_imap.login = AsyncMock()
+        mock_imap.select = AsyncMock()
+        mock_imap.uid = AsyncMock(side_effect=RuntimeError("store rejected"))
+        mock_imap.logout = AsyncMock()
+        mock_imap.expunge = AsyncMock()
+
+        with patch.object(email_client_with_creds, "_imap_connect", return_value=mock_imap):
+            deleted, failed = await email_client_with_creds.delete_emails(["100"], "INBOX")
+
+        assert deleted == []
+        assert failed == ["100"]
+        # No expunge should run when nothing was flagged.
+        mock_imap.expunge.assert_not_called()
+        for call in mock_imap.uid.await_args_list:
+            assert call.args[0] != "expunge"

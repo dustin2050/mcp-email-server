@@ -21,7 +21,7 @@ import aioimaplib
 import aiosmtplib
 
 from mcp_email_server.emails._helpers import _create_ssl_context, _quote_mailbox, _send_imap_id
-from mcp_email_server.emails.mailbox import LIST_LINE_RE
+from mcp_email_server.emails.mailbox import LIST_LINE_RE, _encode_imap_utf7
 from mcp_email_server.config import EmailServer, EmailSettings
 from mcp_email_server.emails import EmailHandler
 from mcp_email_server.emails.mailbox import EmailOps, MailboxOps
@@ -904,9 +904,12 @@ class EmailClient:
         else:
             imap = aioimaplib.IMAP4(incoming_server.host, incoming_server.port)
 
-        # Common Sent folder names across different providers
+        # Common Sent folder names across different providers. User-supplied
+        # names may contain non-ASCII (e.g. "Gesendete Elemente" or umlauts),
+        # which IMAP requires in modified UTF-7. The hardcoded candidates and
+        # flag-detected names are already plain-ASCII / raw server-encoded.
         sent_folder_candidates = [
-            sent_folder_name,  # User-specified override (if provided)
+            _encode_imap_utf7(sent_folder_name) if sent_folder_name else None,
             "Sent",
             "INBOX.Sent",
             "Sent Items",
@@ -995,7 +998,23 @@ class EmailClient:
                     logger.error(f"Failed to delete email {email_id}: {e}")
                     failed_ids.append(email_id)
 
-            await imap.expunge()
+            # UID EXPUNGE only purges the IDs we just flagged. A bare EXPUNGE would
+            # additionally purge any other messages already flagged \Deleted by
+            # another session — silent data loss. If the server lacks UIDPLUS the
+            # messages stay flagged but unpurged; user can run a manual expunge.
+            if deleted_ids:
+                try:
+                    result, lines = await imap.uid("expunge", ",".join(deleted_ids))
+                    if str(result).upper() != "OK":
+                        logger.warning(
+                            f"UID EXPUNGE returned {result!r} ({lines!r}); messages remain "
+                            "flagged \\Deleted but were not purged. Server may not support UIDPLUS."
+                        )
+                except Exception as e:
+                    logger.warning(
+                        f"UID EXPUNGE not supported by server ({e}); messages remain flagged "
+                        "\\Deleted but were not purged."
+                    )
         finally:
             try:
                 await imap.logout()

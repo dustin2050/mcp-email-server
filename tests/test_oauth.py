@@ -433,3 +433,35 @@ async def test_revoke_token_removes_access_and_refresh_pair(monkeypatch):
 
     assert await provider.load_access_token(token.access_token) is None
     assert await provider.load_refresh_token(client, token.refresh_token) is None
+
+
+class TestCleanEnvValueAsymmetricQuotes:
+    """Regression: _clean_env_value previously only stripped quotes when BOTH
+    sides matched. Autocorrect / iOS / paste-mangling routinely produce
+    asymmetric quoting (smart quote on one side, no quote or ASCII on the
+    other), which then survived and broke URL parsing downstream."""
+
+    def test_strips_leading_only_straight_quote(self) -> None:
+        from mcp_email_server.oauth import _clean_env_value
+
+        assert _clean_env_value('"claude-desktop') == "claude-desktop"
+
+    def test_strips_trailing_only_smart_quote(self) -> None:
+        from mcp_email_server.oauth import _clean_env_value
+
+        assert _clean_env_value("claude-desktop“") == "claude-desktop"
+
+    def test_strips_mixed_pair(self) -> None:
+        from mcp_email_server.oauth import _clean_env_value
+
+        assert _clean_env_value('"claude-desktop“') == "claude-desktop"
+
+    def test_leaves_unquoted_value_unchanged(self) -> None:
+        from mcp_email_server.oauth import _clean_env_value
+
+        assert _clean_env_value("claude-desktop") == "claude-desktop"
+
+    def test_handles_none(self) -> None:
+        from mcp_email_server.oauth import _clean_env_value
+
+        assert _clean_env_value(None) is None

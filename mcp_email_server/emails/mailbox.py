@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from contextlib import asynccontextmanager
+import base64
 import re
+from contextlib import asynccontextmanager
 
 import aioimaplib
 
@@ -24,6 +25,70 @@ def _decode_imap_line(line: bytes | str | object) -> str:
     if isinstance(line, bytes):
         return line.decode("utf-8", errors="replace")
     return str(line)
+
+
+def _decode_imap_utf7(s: str) -> str:
+    """Decode IMAP modified UTF-7 (RFC 3501 §5.1.3) to a Unicode string.
+
+    Differs from RFC 2152 UTF-7: '&' replaces '+' as the shift character,
+    '/' is replaced with ',' inside the base64 alphabet, and '&-' is the
+    literal '&'. Without this, GMX returns folder names like 'Entw&APw-rfe'
+    (= 'Entwürfe') verbatim and the client sees garbage.
+    """
+    result = []
+    i = 0
+    n = len(s)
+    while i < n:
+        if s[i] == "&":
+            end = s.find("-", i + 1)
+            if end == -1:
+                result.append(s[i:])
+                break
+            if end == i + 1:
+                result.append("&")  # &- → &
+            else:
+                b64 = s[i + 1 : end].replace(",", "/")
+                b64 += "=" * (-len(b64) % 4)
+                try:
+                    result.append(base64.b64decode(b64).decode("utf-16-be"))
+                except Exception:
+                    # Malformed encoded run — surface verbatim rather than crash.
+                    result.append(s[i : end + 1])
+            i = end + 1
+        else:
+            result.append(s[i])
+            i += 1
+    return "".join(result)
+
+
+def _encode_imap_utf7(s: str) -> str:
+    """Encode a Unicode string to IMAP modified UTF-7 (RFC 3501 §5.1.3)."""
+    out: list[str] = []
+    buf: list[str] = []
+
+    def _flush() -> None:
+        if buf:
+            text = "".join(buf)
+            encoded = (
+                base64.b64encode(text.encode("utf-16-be"))
+                .decode("ascii")
+                .rstrip("=")
+                .replace("/", ",")
+            )
+            out.append(f"&{encoded}-")
+            buf.clear()
+
+    for c in s:
+        if c == "&":
+            _flush()
+            out.append("&-")
+        elif 0x20 <= ord(c) <= 0x7E:
+            _flush()
+            out.append(c)
+        else:
+            buf.append(c)
+    _flush()
+    return "".join(out)
 
 
 def _raise_for_imap_response(
@@ -102,16 +167,17 @@ class MailboxOps(_ImapSession):
     def to_imap_path(self, user_path: str) -> str:
         delimiter = self._delimiter_or_raise()
         if delimiter == "":
-            return user_path
+            return _encode_imap_utf7(user_path)
         parts = user_path.split("/")
         if any(part == "" for part in parts):
             raise ValueError(f"Invalid mailbox path: {user_path!r}")
-        return delimiter.join(parts)
+        return delimiter.join(_encode_imap_utf7(p) for p in parts)
 
     def from_imap_path(self, server_path: str, delimiter: str) -> str:
+        decoded = _decode_imap_utf7(server_path)
         if delimiter == "":
-            return server_path
-        return server_path.replace(delimiter, "/")
+            return decoded
+        return decoded.replace(delimiter, "/")
 
     async def list_mailboxes(self, pattern: str = "*", subscribed_only: bool = False) -> list[MailboxInfo]:
         async with self._login_logout() as imap:
@@ -305,10 +371,20 @@ class EmailOps(_ImapSession):
                     )
 
             if flagged_for_expunge:
-                expunge_result, _expunge_lines = await imap.expunge()
+                # UID EXPUNGE only purges the IDs we flagged. A bare EXPUNGE could
+                # purge other \Deleted-flagged messages from concurrent sessions.
+                try:
+                    expunge_result, _expunge_lines = await imap.uid(
+                        "expunge", ",".join(flagged_for_expunge)
+                    )
+                except Exception as e:
+                    expunge_result = "BAD"
+                    _expunge_lines = [str(e).encode()]
                 if expunge_result != "OK":
                     expunge_error = (
-                        "COPY succeeded and source was flagged \\Deleted, but EXPUNGE failed; no rollback performed."
+                        "COPY succeeded and source was flagged \\Deleted, but UID EXPUNGE failed; "
+                        "source messages remain in the mailbox flagged \\Deleted. "
+                        f"Detail: {_expunge_lines!r}"
                     )
                     adjusted_results: list[MovedEmail] = []
                     for item in results:

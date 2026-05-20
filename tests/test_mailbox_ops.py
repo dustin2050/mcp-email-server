@@ -317,3 +317,36 @@ class TestMailboxStatus:
         assert status.uid_validity is None
         assert status.flags == [r"\Seen"]
         assert status.permanent_flags == [r"\Seen", r"\*"]
+
+
+class TestImapUtf7:
+    """Regression tests for IMAP modified UTF-7 (RFC 3501 §5.1.3).
+
+    Without this codec, GMX folder names like 'Entw&APw-rfe' (= 'Entwürfe')
+    are surfaced to the client verbatim and round-trips break.
+    """
+
+    @pytest.mark.parametrize(
+        ("encoded", "decoded"),
+        [
+            ("INBOX", "INBOX"),
+            ("Gesendet", "Gesendet"),
+            ("Haus Harras", "Haus Harras"),
+            ("Entw&APw-rfe", "Entwürfe"),
+            ("Gel&APY-scht", "Gelöscht"),
+            ("Gel&APY-schte Elemente", "Gelöschte Elemente"),
+            ("&-", "&"),
+            ("R&AOQ-tsel&APY-l", "Rätselöl"),
+        ],
+    )
+    def test_decode_roundtrip(self, encoded: str, decoded: str) -> None:
+        from mcp_email_server.emails.mailbox import _decode_imap_utf7, _encode_imap_utf7
+
+        assert _decode_imap_utf7(encoded) == decoded
+        assert _encode_imap_utf7(decoded) == encoded
+
+    def test_decode_handles_malformed_run(self) -> None:
+        from mcp_email_server.emails.mailbox import _decode_imap_utf7
+
+        # An unterminated '&...' sequence should not crash; it falls through verbatim.
+        assert _decode_imap_utf7("foo&bar") == "foo&bar"

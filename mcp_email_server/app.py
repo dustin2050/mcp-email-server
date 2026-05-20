@@ -369,7 +369,9 @@ async def get_attachment(
                 "representation per MIME type; PDFs use embedded text layer with OCR "
                 "fallback for scans. 'text': force text extraction (PDF text layer first, "
                 "then OCR; text/* decoded). 'ocr': force tesseract OCR (PDFs and images). "
-                "'raw': always return the raw base64 blob."
+                "'raw': skip server-side text/OCR extraction and return the raw "
+                "base64 bytes (images as ImageContent so they remain viewable; "
+                "everything else as EmbeddedResource)."
             )
         ),
     ] = "auto",

@@ -75,14 +75,18 @@ def _clean_env_value(value: str | None) -> str | None:
     then reject the resulting strings with a confusing 'relative URL without
     a base' error and the container crashes on startup. Strip them defensively
     before parsing — independently per side, since autocorrect often only
-    rewrites one side.
+    rewrites one side (the docstring previously promised this, but the original
+    `both-ends-or-nothing` check meant a single-sided quote stayed and broke
+    URL parsing anyway).
     """
     if value is None:
         return None
     cleaned = value.strip()
-    if len(cleaned) >= 2 and cleaned[0] in _WRAPPING_QUOTE_CHARS and cleaned[-1] in _WRAPPING_QUOTE_CHARS:
-        cleaned = cleaned[1:-1].strip()
-    return cleaned
+    if cleaned and cleaned[0] in _WRAPPING_QUOTE_CHARS:
+        cleaned = cleaned[1:]
+    if cleaned and cleaned[-1] in _WRAPPING_QUOTE_CHARS:
+        cleaned = cleaned[:-1]
+    return cleaned.strip()
 
 
 def _ensure_url_scheme(value: str) -> str:
