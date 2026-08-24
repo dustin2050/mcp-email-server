@@ -231,7 +231,14 @@ async def delete_emails(
 
 
 @mcp.tool(
-    description="Download an email attachment and save it to the specified path. This feature must be explicitly enabled in settings (enable_attachment_download=true) due to security considerations.",
+    description=(
+        "Save an email attachment to a filesystem path on the machine running the server. "
+        "This is ONLY useful for local stdio deployments where the server and the client "
+        "share a filesystem. For remote/HTTP clients (Claude.ai, Claude Desktop) this tool "
+        "cannot help — the file lands on the server's disk, out of the client's reach — so "
+        "use `get_attachment` instead, which returns the content inline. Disabled by default "
+        "and must be explicitly enabled with enable_attachment_download=true."
+    ),
 )
 async def download_attachment(
     account_name: Annotated[str, Field(description="The name of the email account.")],
@@ -247,7 +254,13 @@ async def download_attachment(
     settings = get_settings()
     if not settings.enable_attachment_download:
         msg = (
-            "Attachment download is disabled. Set 'enable_attachment_download=true' in settings to enable this feature."
+            "Attachment download is disabled (enable_attachment_download=false). "
+            "Note that download_attachment only writes to the server's local disk and is "
+            "meant for local stdio deployments; for remote clients it cannot deliver the "
+            "file. To read, view, or hand an attachment to the user, call the "
+            "`get_attachment` tool instead — it needs no configuration and returns images, "
+            "PDF text (with OCR fallback), and other files inline. Only enable this tool "
+            "(enable_attachment_download=true) if you specifically need to save to a local path."
         )
         raise PermissionError(msg)
 
@@ -339,7 +352,11 @@ def _decode_text_attachment(data: bytes, mime: str) -> str | None:
 
 @mcp.tool(
     description=(
-        "Fetch an email attachment and return its content inline. By default "
+        "Retrieve an email attachment and return its content inline. This is the "
+        "primary, always-available way to download, read, or view an attachment — "
+        "prefer it over download_attachment for any client that is not running the "
+        "server locally (Claude.ai, Claude Desktop, and other remote/HTTP clients). "
+        "By default "
         "(mode='auto') the server picks the best representation: images come back "
         "as image content blocks (viewable in the chat), PDFs are returned as "
         "extracted plain text (falls back to OCR via tesseract for scanned PDFs), "
