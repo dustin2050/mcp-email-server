@@ -1,4 +1,9 @@
 import base64
+import hashlib
+import hmac
+import json
+import os
+import time
 from datetime import datetime
 from typing import Annotated, Literal
 from urllib.parse import quote
@@ -6,7 +11,7 @@ from urllib.parse import quote
 from mcp.server.fastmcp import FastMCP
 from mcp.types import BlobResourceContents, EmbeddedResource, ImageContent, TextContent
 from pydantic import Field
-from starlette.responses import JSONResponse
+from starlette.responses import JSONResponse, Response
 
 from mcp_email_server.config import (
     AccountAttributes,
@@ -38,6 +43,98 @@ def configure_http_auth() -> bool:
 @mcp.custom_route("/healthz", methods=["GET"])
 async def healthz(_request):
     return JSONResponse({"status": "ok"})
+
+
+# --- Signed, time-limited attachment download links ---
+# Remote MCP clients (Claude.ai / Claude Desktop) cannot accept a raw
+# application/pdf blob ("Resources of type 'application/pdf' are not supported")
+# and cannot reach the server's own disk. To let a user save the ORIGINAL
+# attachment file, the server hands out a signed HTTPS link that a browser can
+# download. The HMAC-SHA256 signature is the only credential the /download route
+# needs, so it lives outside the OAuth wall (like /healthz) yet stays
+# unforgeable and expires quickly.
+
+_ATTACHMENT_URL_TTL_SECONDS = 15 * 60
+
+
+def _attachment_url_secret() -> bytes:
+    secret = os.environ.get("MCP_ATTACHMENT_URL_SECRET") or os.environ.get("MCP_OAUTH_CLIENT_SECRET")
+    if not secret:
+        # No configured secret: fall back to a process-stable value so links at
+        # least work within one run. Set MCP_ATTACHMENT_URL_SECRET in production.
+        secret = "mcp-email-attachment-insecure-default"  # noqa: S105 — non-secret fallback label, not a credential
+    return secret.encode("utf-8")
+
+
+def _b64url_encode(raw: bytes) -> str:
+    return base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
+
+
+def _b64url_decode(value: str) -> bytes:
+    return base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))
+
+
+def _sign_attachment_token(payload: dict) -> str:
+    body = _b64url_encode(json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8"))
+    sig = hmac.new(_attachment_url_secret(), body.encode("ascii"), hashlib.sha256).digest()
+    return f"{body}.{_b64url_encode(sig)}"
+
+
+def _verify_attachment_token(token: str) -> dict | None:
+    parts = token.split(".")
+    if len(parts) != 2:
+        return None
+    body, sig = parts
+    expected = hmac.new(_attachment_url_secret(), body.encode("ascii"), hashlib.sha256).digest()
+    try:
+        got = _b64url_decode(sig)
+    except Exception:
+        return None
+    if not hmac.compare_digest(expected, got):
+        return None
+    try:
+        payload = json.loads(_b64url_decode(body))
+    except Exception:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    exp = payload.get("exp")
+    if not isinstance(exp, (int, float)) or exp < time.time():
+        return None
+    return payload
+
+
+def _sanitize_download_filename(name: str) -> str:
+    # Strip characters that could break the Content-Disposition header or walk
+    # the filesystem; the name is only a suggestion to the browser.
+    cleaned = name.replace("\r", "").replace("\n", "").replace('"', "").replace("\\", "")
+    cleaned = os.path.basename(cleaned).strip()
+    return cleaned or "attachment"
+
+
+@mcp.custom_route("/download", methods=["GET"])
+async def download_attachment_route(request):
+    token = request.query_params.get("token", "")
+    payload = _verify_attachment_token(token)
+    if payload is None:
+        return JSONResponse({"error": "invalid or expired download link"}, status_code=403)
+    try:
+        handler = dispatch_handler(payload["account_name"])
+        result = await handler.get_attachment_content(
+            payload["email_id"],
+            payload["attachment_name"],
+            payload.get("mailbox", "INBOX"),
+        )
+    except (KeyError, ValueError, NotImplementedError):
+        return JSONResponse({"error": "attachment not found"}, status_code=404)
+    data: bytes = result["data"]
+    mime: str = result["mime_type"] or "application/octet-stream"
+    filename = _sanitize_download_filename(payload["attachment_name"])
+    headers = {
+        "Content-Disposition": f'attachment; filename="{filename}"',
+        "Content-Length": str(len(data)),
+    }
+    return Response(content=data, media_type=mime, headers=headers)
 
 
 @mcp.resource("email://{account_name}")
@@ -257,10 +354,11 @@ async def download_attachment(
             "Attachment download is disabled (enable_attachment_download=false). "
             "Note that download_attachment only writes to the server's local disk and is "
             "meant for local stdio deployments; for remote clients it cannot deliver the "
-            "file. To read, view, or hand an attachment to the user, call the "
-            "`get_attachment` tool instead — it needs no configuration and returns images, "
-            "PDF text (with OCR fallback), and other files inline. Only enable this tool "
-            "(enable_attachment_download=true) if you specifically need to save to a local path."
+            "file. To let the user save the ORIGINAL file (e.g. an invoice PDF), call "
+            "`get_attachment_link`, which returns a downloadable HTTPS link that works in "
+            "remote clients. To read or view an attachment inline, call `get_attachment`. "
+            "Only enable this tool (enable_attachment_download=true) if you specifically "
+            "need to save to a local path on the machine running the server."
         )
         raise PermissionError(msg)
 
@@ -363,8 +461,9 @@ def _decode_text_attachment(data: bytes, mime: str) -> str | None:
         "text files as decoded text, other binaries as embedded resource blobs. "
         "Use mode='text' to force text extraction (PDF text layer first, then OCR), "
         "mode='ocr' to force OCR (for PDFs and images, useful for scanned docs), "
-        "mode='raw' to force the raw base64 blob. For saving to a local filesystem "
-        "path, use `download_attachment` instead. "
+        "mode='raw' to force the raw base64 blob. To let the user save the ORIGINAL "
+        "file (e.g. an invoice PDF), use `get_attachment_link`, which returns a "
+        "downloadable HTTPS link that works in remote clients. "
         f"Payload cap: {_ATTACHMENT_MAX_INLINE_BYTES // (1024 * 1024)} MiB. "
         f"OCR languages: {_OCR_LANG}."
     ),
@@ -405,7 +504,8 @@ async def get_attachment(
         actual_mib = size / (1024 * 1024)
         msg = (
             f"Attachment '{attachment_name}' is {actual_mib:.1f} MiB which exceeds the "
-            f"inline cap of {limit_mib} MiB. Use download_attachment to save it to disk."
+            f"inline cap of {limit_mib} MiB. Use get_attachment_link to download the "
+            "original file via a browser instead."
         )
         raise ValueError(msg)
 
@@ -512,6 +612,51 @@ async def get_attachment(
         # raw mode for image — still return as ImageContent so client can show it
         return [summary, ImageContent(type="image", data=b64, mimeType=mime)]
     return [summary, EmbeddedResource(type="resource", resource=blob)]
+
+
+@mcp.tool(
+    description=(
+        "Return a signed, time-limited HTTPS link for downloading an email "
+        "attachment's ORIGINAL file (byte-for-byte). Use this whenever the user "
+        "wants to save or keep the original attachment — e.g. an invoice PDF — "
+        "especially from a remote client (Claude.ai, Claude Desktop) that cannot "
+        "accept an inline PDF blob and cannot reach the server's disk. The user "
+        "opens the returned link in a browser to download the file. Prefer this "
+        "over get_attachment (which returns extracted text or an inline blob) and "
+        "over download_attachment (which only writes to the server's own disk). "
+        f"Links expire after {_ATTACHMENT_URL_TTL_SECONDS // 60} minutes. Requires "
+        "MCP_PUBLIC_URL to be configured on the server."
+    ),
+)
+async def get_attachment_link(
+    account_name: Annotated[str, Field(description="The name of the email account.")],
+    email_id: Annotated[
+        str, Field(description="The email ID (obtained from list_emails_metadata or get_emails_content).")
+    ],
+    attachment_name: Annotated[
+        str, Field(description="The name of the attachment to download (as shown in the attachments list).")
+    ],
+    mailbox: Annotated[str, Field(description="The mailbox to search in (default: INBOX).")] = "INBOX",
+) -> str:
+    public_url = os.environ.get("MCP_PUBLIC_URL", "").strip()
+    if not public_url:
+        msg = (
+            "MCP_PUBLIC_URL is not configured, so a download link cannot be built. "
+            "Use get_attachment to read the attachment inline instead."
+        )
+        raise ValueError(msg)
+    base = public_url.rstrip("/")
+    if "://" not in base:
+        base = f"https://{base}"
+    payload = {
+        "account_name": account_name,
+        "email_id": email_id,
+        "attachment_name": attachment_name,
+        "mailbox": mailbox,
+        "exp": int(time.time()) + _ATTACHMENT_URL_TTL_SECONDS,
+    }
+    token = _sign_attachment_token(payload)
+    return f"{base}/download?token={token}"
 
 
 @mcp.tool(description="List available mailboxes for an account.")
